@@ -55,26 +55,13 @@ validate_efficiency_config_lasso <- function(config) {
   invisible(config)
 }
 
-bulk_ess_lasso <- function(x, method, coordinate) {
-  label <- paste0(method, ", ", coordinate)
-  if (any(!is.finite(x))) {
-    message("Bulk ESS is NA for ", label, ": production draws contain non-finite values.")
-    return(NA_real_)
+mean_ess_lasso <- function(x, method, coordinate) {
+  label <- paste(method, coordinate, sep = ", ")
+  estimate <- mean_diagnostics(x, label)
+  if (nzchar(estimate$undefined_reason)) {
+    message(label, ": ", estimate$undefined_reason)
   }
-  if (length(unique(x)) < 2L) {
-    message("Bulk ESS is NA for ", label, ": production draws form a constant chain.")
-    return(NA_real_)
-  }
-
-  tryCatch(
-    as.numeric(posterior::ess_bulk(matrix(x, ncol = 1L))),
-    error = function(error) {
-      stop(
-        "Bulk ESS failed for ", label, ": ", conditionMessage(error),
-        call. = FALSE
-      )
-    }
-  )
+  estimate$ess_mean
 }
 
 canonical_selection_lasso <- function(lambda_index, lambda_value, beta, tolerance) {

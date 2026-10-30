@@ -1,21 +1,24 @@
-#!/usr/bin/env Rscript
+script_file <- if (sys.nframe() > 0L) {
+  files <- vapply(sys.frames(), function(frame) {
+    if (is.null(frame$ofile)) "" else as.character(frame$ofile)
+  }, character(1L))
+  tail(files[nzchar(files)], 1L)
+} else {
+  sub("^--file=", "", grep("^--file=", commandArgs(FALSE), value = TRUE)[1L])
+}
+script_directory <- dirname(normalizePath(script_file, winslash = "/", mustWork = TRUE))
 
-options(stringsAsFactors = FALSE)
-arguments <- commandArgs(trailingOnly = TRUE)
-if (length(arguments) > 1L) stop("Usage: Rscript table_efficiency_cp.R [efficiency_cp.rds]")
-input_path <- if (length(arguments)) arguments[[1L]] else "efficiency_cp.rds"
-if (!file.exists(input_path)) stop("Results file not found: ", input_path)
+main <- function() {
+  options(stringsAsFactors = FALSE)
 
-result <- readRDS(input_path)
-required <- c("method", "final_proposal_scale", "efficiency_per_1000",
-              "production_acceptance", "zero_estimate_rate")
-if (!all(required %in% names(result$estimates))) stop("Result object has incompatible estimates.")
-order <- c("Rejection", "Crude PMMH", "Correlated PMMH")
-table <- result$estimates[match(order, result$estimates$method), required, drop = FALSE]
-if (anyNA(table$method)) stop("The paper table requires all three methods.")
-table$gain <- table$efficiency_per_1000 / table$efficiency_per_1000[1L]
-table <- table[, c("method", "final_proposal_scale", "efficiency_per_1000", "gain",
-                   "production_acceptance", "zero_estimate_rate")]
-names(table) <- c("Method", "h_final", "Efficiency", "Gain", "Acc.", "Zero rate")
-print(table, row.names = FALSE, digits = 15)
+  source(file.path(script_directory, "../../../diagnostics.R"), local = TRUE)
+  arguments <- commandArgs(trailingOnly = TRUE)
+  if (length(arguments) > 1L) stop("Usage: Rscript table_efficiency_cp.R [efficiency_cp.rds]")
+  input <- if (length(arguments)) arguments[[1L]] else file.path(script_directory, "efficiency_cp.rds")
+  if (!file.exists(input)) stop("Results file not found: ", input)
 
+  table <- efficiency_table(readRDS(input))
+  print(table, row.names = FALSE, digits = 15)
+}
+
+if (sys.nframe() == 0L) main()

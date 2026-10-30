@@ -1,117 +1,133 @@
-#!/usr/bin/env Rscript
-
-options(stringsAsFactors = FALSE)
-
-if (!requireNamespace("glmnet", quietly = TRUE) ||
-    !requireNamespace("posterior", quietly = TRUE)) {
-  stop("Packages 'glmnet' and 'posterior' are required.")
+script_file <- if (sys.nframe() > 0L) {
+  files <- vapply(sys.frames(), function(frame) {
+    if (is.null(frame$ofile)) "" else as.character(frame$ofile)
+  }, character(1L))
+  tail(files[nzchar(files)], 1L)
+} else {
+  sub("^--file=", "", grep("^--file=", commandArgs(FALSE), value = TRUE)[1L])
 }
-source("functions_lasso.R", local = TRUE)
-source("samplers_lasso.R", local = TRUE)
+script_directory <- dirname(script_file)
 
-arguments <- commandArgs(trailingOnly = TRUE)
-if (length(arguments) != 2L || !arguments[[1L]] %in% c("pmmh", "rejection", "all")) {
-  stop("Usage: Rscript sampling_efficiency_lasso.R {pmmh|rejection|all} output.rds")
-}
-mode <- arguments[[1L]]
-output_path <- arguments[[2L]]
-if (file.exists(output_path) || dir.exists(output_path)) {
-  stop("Output already exists: ", output_path)
-}
+main <- function(arguments = commandArgs(trailingOnly = TRUE)) {
+  options(stringsAsFactors = FALSE)
 
-paper_results <- readRDS("efficiency_lasso.rds")
-benchmark <- paper_results$benchmark
-config <- paper_results$config
-validate_efficiency_config_lasso(config)
+  source(file.path(script_directory, "../../../diagnostics.R"), local = TRUE)
+  require_diagnostic_version()
 
-summarize_pmmh <- function(result) {
-  coordinate_names <- paste0("T", seq_len(ncol(result$draws)))
-  coordinate_ess <- vapply(
-    seq_len(ncol(result$draws)),
-    function(index) {
-      bulk_ess_lasso(
-        result$draws[, index],
-        method = result$method,
-        coordinate = coordinate_names[index]
-      )
-    },
-    numeric(1L)
-  )
-  minimum_ess <- if (any(!is.finite(coordinate_ess))) {
-    NA_real_
-  } else {
-    min(coordinate_ess)
+  if (!requireNamespace("glmnet", quietly = TRUE) ||
+      !requireNamespace("posterior", quietly = TRUE)) {
+    stop("Packages 'glmnet' and 'posterior' are required.")
+  }
+  source(file.path(script_directory, "functions_lasso.R"), local = TRUE)
+  source(file.path(script_directory, "samplers_lasso.R"), local = TRUE)
+
+  if (length(arguments) != 2L || !arguments[[1L]] %in% c("pmmh", "rejection", "all")) {
+    stop("Usage: Rscript sampling_efficiency_lasso.R {pmmh|rejection|all} output.rds")
+  }
+  mode <- arguments[[1L]]
+  output_path <- arguments[[2L]]
+  if (file.exists(output_path) || dir.exists(output_path)) {
+    stop("Output already exists: ", output_path)
   }
 
-  list(
-    estimate = data.frame(
-      method = result$method,
-      selector_evaluations = result$selector_evaluations,
-      effective_samples = minimum_ess,
-      efficiency_per_1000 = 1000 * minimum_ess / result$selector_evaluations,
-      production_acceptance = mean(result$accepted),
-      zero_estimate_rate = mean(!result$proposed_selected),
-      final_proposal_scale = result$final_proposal_scale,
-      stringsAsFactors = FALSE
-    ),
-    coordinate_ess = data.frame(
-      method = result$method,
-      coordinate = coordinate_names,
-      bulk_ess = coordinate_ess,
-      stringsAsFactors = FALSE
-    ),
-    production_draws = result$draws
-  )
-}
+  paper_results <- readRDS(file.path(script_directory, "efficiency_lasso.rds"))
+  benchmark <- paper_results$benchmark
+  config <- paper_results$config
+  validate_efficiency_config_lasso(config)
 
-parts <- list()
-if (mode %in% c("pmmh", "all")) {
-  methods <- c("Crude PMMH", "Correlated PMMH")
-  runs <- lapply(
-    methods,
-    function(method) run_pmmh_lasso(benchmark, config, method)
-  )
-  summaries <- lapply(runs, summarize_pmmh)
-  parts$pmmh <- list(
-    estimates = do.call(
-      rbind,
-      lapply(summaries, `[[`, "estimate")
-    ),
-    coordinate_ess = do.call(
-      rbind,
-      lapply(summaries, `[[`, "coordinate_ess")
-    ),
-    production_draws = setNames(
-      lapply(summaries, `[[`, "production_draws"),
-      methods
+  summarize_pmmh <- function(result) {
+    coordinate_names <- paste0("T", seq_len(ncol(result$draws)))
+    coordinate_ess <- vapply(
+      seq_len(ncol(result$draws)),
+      function(index) {
+        mean_ess_lasso(
+          result$draws[, index],
+          method = result$method,
+          coordinate = coordinate_names[index]
+        )
+      },
+      numeric(1L)
     )
+    minimum_ess <- if (any(!is.finite(coordinate_ess))) {
+      NA_real_
+    } else {
+      min(coordinate_ess)
+    }
+
+    list(
+      estimate = data.frame(
+        method = result$method,
+        selector_evaluations = result$selector_evaluations,
+        effective_samples = minimum_ess,
+        efficiency_per_1000 = 1000 * minimum_ess / result$selector_evaluations,
+        production_acceptance = mean(result$accepted),
+        zero_estimate_rate = mean(!result$proposed_selected),
+        final_proposal_scale = result$final_proposal_scale,
+        stringsAsFactors = FALSE
+      ),
+      coordinate_ess = data.frame(
+        method = result$method,
+        coordinate = coordinate_names,
+        ess_mean = coordinate_ess,
+        stringsAsFactors = FALSE
+      ),
+      production_draws = result$draws
+    )
+  }
+
+  parts <- list()
+  if (mode %in% c("pmmh", "all")) {
+    methods <- c("Crude PMMH", "Correlated PMMH")
+    runs <- lapply(
+      methods,
+      function(method) run_pmmh_lasso(benchmark, config, method)
+    )
+    summaries <- lapply(runs, summarize_pmmh)
+    parts$pmmh <- list(
+      estimates = do.call(
+        rbind,
+        lapply(summaries, `[[`, "estimate")
+      ),
+      coordinate_ess = do.call(
+        rbind,
+        lapply(summaries, `[[`, "coordinate_ess")
+      ),
+      production_draws = setNames(
+        lapply(summaries, `[[`, "production_draws"),
+        methods
+      )
+    )
+  }
+  if (mode %in% c("rejection", "all")) {
+    rejection <- run_rejection_lasso(benchmark, config)
+    parts$rejection <- list(
+      estimates = data.frame(
+        method = "Rejection",
+        selector_evaluations = rejection$attempts,
+        effective_samples = rejection$hits,
+        efficiency_per_1000 = 1000 * rejection$hits / rejection$attempts,
+        production_acceptance = NA_real_,
+        zero_estimate_rate = NA_real_,
+        final_proposal_scale = NA_real_,
+        stringsAsFactors = FALSE
+      ),
+      accepted_draws = rejection$accepted
+    )
+  }
+
+  estimates <- do.call(rbind, lapply(parts, `[[`, "estimates"))
+  result <- list(
+    config = config,
+    benchmark = benchmark,
+    estimates = estimates,
+    coordinate_ess = if (!is.null(parts$pmmh)) parts$pmmh$coordinate_ess else NULL,
+    simulation_output = parts
   )
-}
-if (mode %in% c("rejection", "all")) {
-  rejection <- run_rejection_lasso(benchmark, config)
-  parts$rejection <- list(
-    estimates = data.frame(
-      method = "Rejection",
-      selector_evaluations = rejection$attempts,
-      effective_samples = rejection$hits,
-      efficiency_per_1000 = 1000 * rejection$hits / rejection$attempts,
-      production_acceptance = NA_real_,
-      zero_estimate_rate = NA_real_,
-      final_proposal_scale = NA_real_,
-      stringsAsFactors = FALSE
-    ),
-    accepted_draws = rejection$accepted
-  )
+  dir.create(dirname(output_path), recursive = TRUE, showWarnings = FALSE)
+  saveRDS(result, output_path, version = 3)
 }
 
-estimates <- do.call(rbind, lapply(parts, `[[`, "estimates"))
-result <- list(
-  config = config,
-  benchmark = benchmark,
-  estimates = estimates,
-  coordinate_ess = if (!is.null(parts$pmmh)) parts$pmmh$coordinate_ess else NULL,
-  simulation_output = parts
-)
-dir.create(dirname(output_path), recursive = TRUE, showWarnings = FALSE)
-saveRDS(result, output_path, version = 3)
+if (sys.nframe() == 0L) {
+  main()
+}
 

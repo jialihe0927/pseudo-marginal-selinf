@@ -79,21 +79,21 @@ advance_chains <- function(state, method, a, b, proposal_scale, rho,
   while (state$n_observations < target_observations) {
     if (method == "Independent PM") {
       state <- independent_pm_transition(state, a, b, proposal_scale)
-    } else if (method == "CPM") {
-      state <- correlated_pm_transition(state, a, b, proposal_scale, rho)
     } else {
-      stop("Unknown sampling method: ", method)
-    }
-
-    if (any(!is.finite(state$x)) || any(!is.finite(state$u))) {
-      stop("A sampler produced a non-finite state.")
-    }
-    if (any(!selection_event(state$x, state$u, a, b))) {
-      stop("A sampler left the selected state space.")
+      state <- correlated_pm_transition(state, a, b, proposal_scale, rho)
     }
 
     state$indicator_sum <- state$indicator_sum + as.integer(state$x <= median_x)
     state$n_observations <- state$n_observations + 1L
+  }
+
+  # Check the full state at each checkpoint. Integrity checks are not charged
+  # to the proposal-selector budget and consume no random numbers.
+  if (any(!is.finite(state$x)) || any(!is.finite(state$u))) {
+    stop("A sampler produced a non-finite state.")
+  }
+  if (any(!selection_event(state$x, state$u, a, b))) {
+    stop("A sampler left the selected state space.")
   }
   state
 }

@@ -1,3 +1,43 @@
+# Configuration.
+default_config_null_cp <- function() {
+  list(
+    experiment = "Changepoint global-null calibration", n = 200L,
+    response_distribution = "N(0, I_n)", randomization_sd = 0.1,
+    minimum_segment = 10L, maximum_changepoints = 4L,
+    penalty_coefficient = 1.25, tie_tolerance = 1e-12,
+    dataset_count = 200L, raw_attempt_limit = 10000L,
+    retention_rule = "first eligible datasets in raw-attempt order",
+    methods = data.frame(
+      method_id = c("full_selector", "fixed_k", "naive_gaussian"),
+      display_name = c("Full-selector", "Fixed-K", "Naive"),
+      event = c(
+        "adaptive final unordered changepoint set equals the observed set",
+        "fix observed K and match the final unordered changepoint set",
+        "no selection adjustment; analytic chi-square reference"
+      ),
+      stringsAsFactors = FALSE
+    ),
+    sampled_method_ids = c("full_selector", "fixed_k"),
+    statistic = "Q = T' Sigma_T^{-1} T",
+    p_value = "inclusive upper-tail count / 5000; no +1 correction",
+    test_level = 0.05, rejection_rule = "p <= 0.05",
+    pmmh = list(
+      warmup = 200L, stabilization = 0L, production = 5000L,
+      total_transitions = 5200L, auxiliary_samples = 1L, rho = 0.8,
+      proposal_scale_initial = 0.8, proposal_scale_min = 0.05,
+      proposal_scale_max = 5, target_acceptance = 0.20,
+      adaptation_rate = 0.5, adaptation_offset = 10, adaptation_power = 0.6,
+      production_adaptation = FALSE,
+      proposal = "T' = T + h/sqrt(d) G xi, with G G' = Sigma_T"
+    ),
+    rng = list(
+      kind = "L'Ecuyer-CMRG", raw_master_seed = 20261013L,
+      formal_master_seed = 20261014L,
+      assignment = "preallocated nextRNGStream state per raw_id/job; scheduling independent"
+    )
+  )
+}
+
 validate_config_null_cp <- function(config) {
   required <- c(
     "n", "randomization_sd", "minimum_segment", "maximum_changepoints",
@@ -33,16 +73,7 @@ sampled_method_ids_null_cp <- function(config) {
   setdiff(as.character(config$methods$method_id), "naive_gaussian")
 }
 
-generate_global_null_cp <- function(config) {
-  response <- rnorm(config$n)
-  randomization <- rnorm(config$n, sd = config$randomization_sd)
-  list(
-    response = response,
-    randomization = randomization,
-    selection_input = response + randomization
-  )
-}
-
+# Adaptive and fixed-K events retain the original split ordering and ties.
 segments_null_cp <- function(n, changepoints) {
   boundaries <- c(0L, sort(as.integer(changepoints)), as.integer(n))
   data.frame(
@@ -168,17 +199,6 @@ same_changepoints_null_cp <- function(left, right) {
   identical(sort(as.integer(left)), sort(as.integer(right)))
 }
 
-reconstruct_response_null_cp <- function(target_value, target) {
-  as.numeric(
-    target$R_obs +
-    target$V %*% (target$Sigma_T_inv %*% as.numeric(target_value))
-  )
-}
-
-target_statistic_null_cp <- function(target_value, target) {
-  drop(crossprod(target_value, target$Sigma_T_inv %*% target_value))
-}
-
 selection_event_null_cp <- function(target_value, auxiliary, dataset, method_id, config) {
   selection_input <-
     reconstruct_response_null_cp(target_value, dataset$target) +
@@ -199,6 +219,138 @@ selection_event_null_cp <- function(target_value, auxiliary, dataset, method_id,
   same_changepoints_null_cp(selected, dataset$selected_changepoints)
 }
 
+# Conditional Gaussian reconstruction and quadratic target.
+reconstruct_response_null_cp <- function(target_value, target) {
+  as.numeric(
+    target$R_obs +
+    target$V %*% (target$Sigma_T_inv %*% as.numeric(target_value))
+  )
+}
+
+target_statistic_null_cp <- function(target_value, target) {
+  drop(crossprod(target_value, target$Sigma_T_inv %*% target_value))
+}
+
+build_target_null_cp <- function(dataset, config) {
+  selected <- sort(as.integer(dataset$selected_changepoints))
+  selected_k <- as.integer(dataset$selected_k)
+  if (selected_k < 1L || selected_k > config$maximum_changepoints || length(selected) != selected_k) stop("Target requires an eligible changepoint selection.")
+  segments <- segments_null_cp(config$n, selected)
+  if (any(segments$end - segments$start + 1L < config$minimum_segment)) stop("Observed segments violate the minimum length.")
+  V <- matrix(0, config$n, selected_k)
+  for (index in seq_len(selected_k)) {
+    V[segments$start[index + 1L]:segments$end[index + 1L], index] <- 1 / (segments$end[index + 1L] - segments$start[index + 1L] + 1L)
+    V[segments$start[index]:segments$end[index], index] <- -1 / (segments$end[index] - segments$start[index] + 1L)
+  }
+  Sigma_T <- crossprod(V)
+  Sigma_T_inv <- solve(Sigma_T)
+  T_obs <- drop(crossprod(V, dataset$response))
+  R_obs <- drop(dataset$response - V %*% (Sigma_T_inv %*% T_obs))
+  Q_obs <- drop(crossprod(T_obs, Sigma_T_inv %*% T_obs))
+  list(
+    dataset_id = dataset$dataset_id, raw_id = dataset$raw_id, K_obs = selected_k,
+    M_obs = selected,
+    segments = lapply(seq_len(nrow(segments)), function(index) {
+      seq.int(segments$start[index], segments$end[index])
+    }),
+    V = V, Sigma_T = Sigma_T, Sigma_T_inv = Sigma_T_inv, T_obs = T_obs,
+    R_obs = R_obs, Q_obs = Q_obs,
+    p_naive = stats::pchisq(Q_obs, df = selected_k, lower.tail = FALSE),
+    U_obs = dataset$randomization / config$randomization_sd
+  )
+}
+
+# Global-null bank and preassigned streams.
+generate_global_null_cp <- function(config) {
+  response <- rnorm(config$n)
+  randomization <- rnorm(config$n, sd = config$randomization_sd)
+  list(
+    response = response,
+    randomization = randomization,
+    selection_input = response + randomization
+  )
+}
+
+rng_streams_null_cp <- function(master_seed, n_streams) {
+  if (n_streams < 1L) return(list())
+  old_kind <- RNGkind()
+  seed_exists <- exists(".Random.seed", envir = .GlobalEnv, inherits = FALSE)
+  if (seed_exists) old_seed <- get(".Random.seed", envir = .GlobalEnv)
+  on.exit({
+    do.call(RNGkind, as.list(old_kind))
+    if (seed_exists) assign(".Random.seed", old_seed, envir = .GlobalEnv)
+    else if (exists(".Random.seed", envir = .GlobalEnv, inherits = FALSE)) rm(".Random.seed", envir = .GlobalEnv)
+  }, add = TRUE)
+  RNGkind("L'Ecuyer-CMRG")
+  set.seed(as.integer(master_seed))
+  streams <- vector("list", n_streams)
+  streams[[1L]] <- get(".Random.seed", envir = .GlobalEnv)
+  if (n_streams > 1L) for (index in 2:n_streams) streams[[index]] <- parallel::nextRNGStream(streams[[index - 1L]])
+  lapply(streams, as.integer)
+}
+
+with_rng_state_null_cp <- function(state, fun) {
+  old_kind <- RNGkind()
+  seed_exists <- exists(".Random.seed", envir = .GlobalEnv, inherits = FALSE)
+  if (seed_exists) old_seed <- get(".Random.seed", envir = .GlobalEnv)
+  on.exit({
+    do.call(RNGkind, as.list(old_kind))
+    if (seed_exists) assign(".Random.seed", old_seed, envir = .GlobalEnv)
+    else if (exists(".Random.seed", envir = .GlobalEnv, inherits = FALSE)) rm(".Random.seed", envir = .GlobalEnv)
+  }, add = TRUE)
+  RNGkind("L'Ecuyer-CMRG")
+  assign(".Random.seed", as.integer(state), envir = .GlobalEnv)
+  value <- fun()
+  list(value = value, final_state = as.integer(get(".Random.seed", envir = .GlobalEnv)))
+}
+
+generate_raw_attempt_null_cp <- function(raw_id, rng_state, config) {
+  generated <- with_rng_state_null_cp(rng_state, function() generate_global_null_cp(config))
+  observed <- select_adaptive_changepoints_null(generated$value$selection_input, config)
+  c(
+    list(raw_id = as.integer(raw_id), generation_stream_id = as.integer(raw_id),
+         generation_rng_state = as.integer(rng_state)), generated$value,
+    list(selected_k = observed$selected_k, selected_changepoints = observed$selected,
+         ordered_path = observed$ordered_path, criterion = observed$criterion)
+  )
+}
+
+assign_rng_null_cp <- function(datasets, config) {
+  sampled <- sampled_method_ids_null_cp(config)
+  streams <- rng_streams_null_cp(config$rng$formal_master_seed, length(datasets) * length(sampled))
+  records <- vector("list", length(streams)); job <- 0L
+  for (dataset in datasets) for (method_id in sampled) {
+    job <- job + 1L
+    records[[job]] <- data.frame(
+      job_id = sprintf("job_%03d", job), dataset_id = dataset$dataset_id,
+      raw_id = dataset$raw_id, method_id = method_id,
+      rng_stream_id = sprintf("formal_stream_%03d", job)
+    )
+    records[[job]]$rng_state <- I(list(streams[[job]]))
+  }
+  do.call(rbind, records)
+}
+
+prepare_bank_null_cp <- function(config = default_config_null_cp()) {
+  validate_config_null_cp(config)
+  streams <- rng_streams_null_cp(config$rng$raw_master_seed, config$raw_attempt_limit)
+  datasets <- list(); raw_id <- 0L
+  while (length(datasets) < config$dataset_count && raw_id < config$raw_attempt_limit) {
+    raw_id <- raw_id + 1L
+    candidate <- generate_raw_attempt_null_cp(raw_id, streams[[raw_id]], config)
+    if (candidate$selected_k < 1L) next
+    candidate$dataset_id <- length(datasets) + 1L
+    candidate$target <- build_target_null_cp(candidate, config)
+    datasets[[candidate$dataset_id]] <- candidate
+  }
+  if (length(datasets) != config$dataset_count) stop("The raw-attempt limit was reached before the bank was complete.")
+  config$raw_attempts <- raw_id
+  bank <- list(config = config, datasets = datasets, rng_assignments = assign_rng_null_cp(datasets, config), raw_attempts = raw_id)
+  validate_bank_null_cp(bank)
+  bank
+}
+
+# Paired summaries and frozen-input checks.
 summarize_null_results_cp <- function(dataset_results, alpha = 0.05, methods = NULL) {
   if (is.null(methods)) methods <- unique(as.character(dataset_results$method_id))
   do.call(
@@ -214,6 +366,28 @@ summarize_null_results_cp <- function(dataset_results, alpha = 0.05, methods = N
       )
     })
   )
+}
+
+validate_bank_null_cp <- function(bank) {
+  required <- c("config", "datasets", "rng_assignments")
+  if (!all(required %in% names(bank))) stop("The changepoint data bank is incomplete.")
+  config <- bank$config; validate_config_null_cp(config)
+  datasets <- bank$datasets
+  if (length(datasets) != config$dataset_count) stop("The data bank has the wrong number of datasets.")
+  ids <- vapply(datasets, `[[`, integer(1L), "dataset_id")
+  raw_ids <- vapply(datasets, `[[`, integer(1L), "raw_id")
+  selected_k <- vapply(datasets, `[[`, integer(1L), "selected_k")
+  if (!identical(ids, seq_len(config$dataset_count)) || anyDuplicated(raw_ids) || !all(diff(raw_ids) > 0L)) stop("Dataset or raw-attempt identities are invalid.")
+  if (any(selected_k < 1L | selected_k > config$maximum_changepoints)) stop("A retained dataset violates the K selection rule.")
+  assignments <- bank$rng_assignments
+  expected <- expand.grid(dataset_id = ids, method_id = sampled_method_ids_null_cp(config), KEEP.OUT.ATTRS = FALSE, stringsAsFactors = FALSE)
+  key <- paste(assignments$dataset_id, assignments$method_id, sep = ":")
+  expected_key <- paste(expected$dataset_id, expected$method_id, sep = ":")
+  if (nrow(assignments) != nrow(expected) || anyDuplicated(key) || !setequal(key, expected_key) ||
+      !all(assignments$raw_id == raw_ids[assignments$dataset_id]) || length(assignments$rng_state) != nrow(assignments)) {
+    stop("The inference random-stream assignments are incomplete or inconsistent.")
+  }
+  invisible(bank)
 }
 
 validate_result_null_cp <- function(result) {
@@ -264,173 +438,4 @@ validate_result_null_cp <- function(result) {
   summary <- summarize_null_results_cp(data, result$config$test_level, method_ids)
   if (!isTRUE(all.equal(summary, result$summary, check.attributes = FALSE))) stop("The summary does not match the dataset-level results.")
   invisible(result)
-}
-default_config_null_cp <- function() {
-  list(
-    experiment = "Changepoint global-null calibration", n = 200L,
-    response_distribution = "N(0, I_n)", randomization_sd = 0.1,
-    minimum_segment = 10L, maximum_changepoints = 4L,
-    penalty_coefficient = 1.25, tie_tolerance = 1e-12,
-    dataset_count = 200L, raw_attempt_limit = 10000L,
-    retention_rule = "first eligible datasets in raw-attempt order",
-    methods = data.frame(
-      method_id = c("full_selector", "fixed_k", "naive_gaussian"),
-      display_name = c("Full-selector", "Fixed-K", "Naive"),
-      event = c(
-        "adaptive final unordered changepoint set equals the observed set",
-        "fix observed K and match the final unordered changepoint set",
-        "no selection adjustment; analytic chi-square reference"
-      ),
-      stringsAsFactors = FALSE
-    ),
-    sampled_method_ids = c("full_selector", "fixed_k"),
-    statistic = "Q = T' Sigma_T^{-1} T",
-    p_value = "inclusive upper-tail count / 5000; no +1 correction",
-    test_level = 0.05, rejection_rule = "p <= 0.05",
-    pmmh = list(
-      warmup = 200L, stabilization = 0L, production = 5000L,
-      total_transitions = 5200L, auxiliary_samples = 1L, rho = 0.8,
-      proposal_scale_initial = 0.8, proposal_scale_min = 0.05,
-      proposal_scale_max = 5, target_acceptance = 0.20,
-      adaptation_rate = 0.5, adaptation_offset = 10, adaptation_power = 0.6,
-      production_adaptation = FALSE,
-      proposal = "T' = T + h/sqrt(d) G xi, with G G' = Sigma_T"
-    ),
-    rng = list(
-      kind = "L'Ecuyer-CMRG", raw_master_seed = 20261013L,
-      formal_master_seed = 20261014L,
-      assignment = "preallocated nextRNGStream state per raw_id/job; scheduling independent"
-    )
-  )
-}
-
-
-rng_streams_null_cp <- function(master_seed, n_streams) {
-  if (n_streams < 1L) return(list())
-  old_kind <- RNGkind()
-  seed_exists <- exists(".Random.seed", envir = .GlobalEnv, inherits = FALSE)
-  if (seed_exists) old_seed <- get(".Random.seed", envir = .GlobalEnv)
-  on.exit({
-    do.call(RNGkind, as.list(old_kind))
-    if (seed_exists) assign(".Random.seed", old_seed, envir = .GlobalEnv)
-    else if (exists(".Random.seed", envir = .GlobalEnv, inherits = FALSE)) rm(".Random.seed", envir = .GlobalEnv)
-  }, add = TRUE)
-  RNGkind("L'Ecuyer-CMRG")
-  set.seed(as.integer(master_seed))
-  streams <- vector("list", n_streams)
-  streams[[1L]] <- get(".Random.seed", envir = .GlobalEnv)
-  if (n_streams > 1L) for (index in 2:n_streams) streams[[index]] <- parallel::nextRNGStream(streams[[index - 1L]])
-  lapply(streams, as.integer)
-}
-
-with_rng_state_null_cp <- function(state, fun) {
-  old_kind <- RNGkind()
-  seed_exists <- exists(".Random.seed", envir = .GlobalEnv, inherits = FALSE)
-  if (seed_exists) old_seed <- get(".Random.seed", envir = .GlobalEnv)
-  on.exit({
-    do.call(RNGkind, as.list(old_kind))
-    if (seed_exists) assign(".Random.seed", old_seed, envir = .GlobalEnv)
-    else if (exists(".Random.seed", envir = .GlobalEnv, inherits = FALSE)) rm(".Random.seed", envir = .GlobalEnv)
-  }, add = TRUE)
-  RNGkind("L'Ecuyer-CMRG")
-  assign(".Random.seed", as.integer(state), envir = .GlobalEnv)
-  value <- fun()
-  list(value = value, final_state = as.integer(get(".Random.seed", envir = .GlobalEnv)))
-}
-
-build_target_null_cp <- function(dataset, config) {
-  selected <- sort(as.integer(dataset$selected_changepoints))
-  selected_k <- as.integer(dataset$selected_k)
-  if (selected_k < 1L || selected_k > config$maximum_changepoints || length(selected) != selected_k) stop("Target requires an eligible changepoint selection.")
-  segments <- segments_null_cp(config$n, selected)
-  if (any(segments$end - segments$start + 1L < config$minimum_segment)) stop("Observed segments violate the minimum length.")
-  V <- matrix(0, config$n, selected_k)
-  for (index in seq_len(selected_k)) {
-    V[segments$start[index + 1L]:segments$end[index + 1L], index] <- 1 / (segments$end[index + 1L] - segments$start[index + 1L] + 1L)
-    V[segments$start[index]:segments$end[index], index] <- -1 / (segments$end[index] - segments$start[index] + 1L)
-  }
-  Sigma_T <- crossprod(V)
-  Sigma_T_inv <- solve(Sigma_T)
-  T_obs <- drop(crossprod(V, dataset$response))
-  R_obs <- drop(dataset$response - V %*% (Sigma_T_inv %*% T_obs))
-  Q_obs <- drop(crossprod(T_obs, Sigma_T_inv %*% T_obs))
-  list(
-    dataset_id = dataset$dataset_id, raw_id = dataset$raw_id, K_obs = selected_k,
-    M_obs = selected,
-    segments = lapply(seq_len(nrow(segments)), function(index) {
-      seq.int(segments$start[index], segments$end[index])
-    }),
-    V = V, Sigma_T = Sigma_T, Sigma_T_inv = Sigma_T_inv, T_obs = T_obs,
-    R_obs = R_obs, Q_obs = Q_obs,
-    p_naive = stats::pchisq(Q_obs, df = selected_k, lower.tail = FALSE),
-    U_obs = dataset$randomization / config$randomization_sd
-  )
-}
-
-generate_raw_attempt_null_cp <- function(raw_id, rng_state, config) {
-  generated <- with_rng_state_null_cp(rng_state, function() generate_global_null_cp(config))
-  observed <- select_adaptive_changepoints_null(generated$value$selection_input, config)
-  c(
-    list(raw_id = as.integer(raw_id), generation_stream_id = as.integer(raw_id),
-         generation_rng_state = as.integer(rng_state)), generated$value,
-    list(selected_k = observed$selected_k, selected_changepoints = observed$selected,
-         ordered_path = observed$ordered_path, criterion = observed$criterion)
-  )
-}
-
-assign_rng_null_cp <- function(datasets, config) {
-  sampled <- sampled_method_ids_null_cp(config)
-  streams <- rng_streams_null_cp(config$rng$formal_master_seed, length(datasets) * length(sampled))
-  records <- vector("list", length(streams)); job <- 0L
-  for (dataset in datasets) for (method_id in sampled) {
-    job <- job + 1L
-    records[[job]] <- data.frame(
-      job_id = sprintf("job_%03d", job), dataset_id = dataset$dataset_id,
-      raw_id = dataset$raw_id, method_id = method_id,
-      rng_stream_id = sprintf("formal_stream_%03d", job)
-    )
-    records[[job]]$rng_state <- I(list(streams[[job]]))
-  }
-  do.call(rbind, records)
-}
-
-validate_bank_null_cp <- function(bank) {
-  required <- c("config", "datasets", "rng_assignments")
-  if (!all(required %in% names(bank))) stop("The changepoint data bank is incomplete.")
-  config <- bank$config; validate_config_null_cp(config)
-  datasets <- bank$datasets
-  if (length(datasets) != config$dataset_count) stop("The data bank has the wrong number of datasets.")
-  ids <- vapply(datasets, `[[`, integer(1L), "dataset_id")
-  raw_ids <- vapply(datasets, `[[`, integer(1L), "raw_id")
-  selected_k <- vapply(datasets, `[[`, integer(1L), "selected_k")
-  if (!identical(ids, seq_len(config$dataset_count)) || anyDuplicated(raw_ids) || !all(diff(raw_ids) > 0L)) stop("Dataset or raw-attempt identities are invalid.")
-  if (any(selected_k < 1L | selected_k > config$maximum_changepoints)) stop("A retained dataset violates the K selection rule.")
-  assignments <- bank$rng_assignments
-  expected <- expand.grid(dataset_id = ids, method_id = sampled_method_ids_null_cp(config), KEEP.OUT.ATTRS = FALSE, stringsAsFactors = FALSE)
-  key <- paste(assignments$dataset_id, assignments$method_id, sep = ":")
-  expected_key <- paste(expected$dataset_id, expected$method_id, sep = ":")
-  if (nrow(assignments) != nrow(expected) || anyDuplicated(key) || !setequal(key, expected_key) ||
-      !all(assignments$raw_id == raw_ids[assignments$dataset_id]) || length(assignments$rng_state) != nrow(assignments)) {
-    stop("The inference random-stream assignments are incomplete or inconsistent.")
-  }
-  invisible(bank)
-}
-
-prepare_bank_null_cp <- function(config = default_config_null_cp()) {
-  validate_config_null_cp(config)
-  streams <- rng_streams_null_cp(config$rng$raw_master_seed, config$raw_attempt_limit)
-  datasets <- list(); raw_id <- 0L
-  while (length(datasets) < config$dataset_count && raw_id < config$raw_attempt_limit) {
-    raw_id <- raw_id + 1L
-    candidate <- generate_raw_attempt_null_cp(raw_id, streams[[raw_id]], config)
-    if (candidate$selected_k < 1L) next
-    candidate$dataset_id <- length(datasets) + 1L
-    candidate$target <- build_target_null_cp(candidate, config)
-    datasets[[candidate$dataset_id]] <- candidate
-  }
-  if (length(datasets) != config$dataset_count) stop("The raw-attempt limit was reached before the bank was complete.")
-  config$raw_attempts <- raw_id
-  bank <- list(config = config, datasets = datasets, rng_assignments = assign_rng_null_cp(datasets, config), raw_attempts = raw_id)
-  validate_bank_null_cp(bank)
-  bank
 }

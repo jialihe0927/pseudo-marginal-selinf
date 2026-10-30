@@ -81,53 +81,16 @@ statistics_validation_lasso <- function(samples, config) {
 }
 
 ess_validation_lasso <- function(x, label = "statistic") {
-  if (!requireNamespace("posterior", quietly = TRUE)) {
-    stop("Package 'posterior' is required for mean ESS and MCSE.")
+  if (!exists("mean_diagnostics", mode = "function")) {
+    stop("Load the repository diagnostics.R before computing CV-Lasso diagnostics.")
   }
-  x <- as.numeric(x)
-  n <- length(x)
-  undefined <- function(reason, package_warnings = "") {
-    list(ess_mean = NA_real_, mcse_mean = NA_real_, tau = NA_real_,
-         undefined_reason = reason, package_warnings = package_warnings)
-  }
-  if (any(!is.finite(x))) stop("Nonfinite ESS/MCSE input for ", label)
-  if (n < 4L) return(undefined("insufficient observations"))
-  if (length(unique(x)) < 2L) return(undefined("constant sequence"))
-
-  # One variable, one chain: rows are iterations, not coordinates or methods.
-  draws <- matrix(as.numeric(x), ncol = 1L)
-  warning_messages <- character()
-  estimates <- withCallingHandlers({
-    list(
-      ess_mean = as.numeric(posterior::ess_basic(draws, split = TRUE)),
-      mcse_mean = as.numeric(posterior::mcse_mean(draws))
-    )
-  }, warning = function(condition) {
-    warning_messages <<- c(warning_messages, conditionMessage(condition))
-    message("posterior warning for ", label, ": ", conditionMessage(condition))
-    # Do not muffle the package warning or catch unexpected errors.
-  })
-  package_warnings <- paste(unique(warning_messages), collapse = " | ")
-  if (length(estimates$ess_mean) != 1L || length(estimates$mcse_mean) != 1L) {
-    stop("Unexpected posterior result shape for ", label)
-  }
-  if (!is.finite(estimates$ess_mean) || estimates$ess_mean <= 0 ||
-      !is.finite(estimates$mcse_mean) || estimates$mcse_mean <= 0) {
-    return(undefined("posterior returned a nonfinite or nonpositive estimate", package_warnings))
-  }
-  expected_mcse <- stats::sd(x) / sqrt(estimates$ess_mean)
-  if (!isTRUE(all.equal(estimates$mcse_mean, expected_mcse, tolerance = 1e-10))) {
-    stop("posterior ESS/MCSE identity failed for ", label,
-         "; check the installed posterior interface.")
-  }
-  list(
-    ess_mean = estimates$ess_mean, mcse_mean = estimates$mcse_mean,
-    tau = n / estimates$ess_mean,
-    undefined_reason = "", package_warnings = package_warnings
-  )
+  mean_diagnostics(x, label)
 }
 
 analyze_validation_lasso <- function(object) {
+  if (as.character(utils::packageVersion("posterior")) != "1.7.0") {
+    stop("This analysis requires posterior 1.7.0.")
+  }
   validate_samples_lasso(object)
   config <- object$config
   config$diagnostic$ess <- "posterior::ess_basic(matrix(x, ncol = 1L), split = TRUE)"
@@ -197,26 +160,11 @@ analyze_validation_lasso <- function(object) {
   tails <- tails_validation_lasso(values, config)
   covariance <- covariance_validation_lasso(object$samples, config)
   diagnostics <- list(ess_mcse = ess, mixing = mixing_validation_lasso(object, ess))
-  if (!requireNamespace("posterior", quietly = TRUE)) stop("Package 'posterior' is required.")
-  bulk <- list()
-  for (method in methods[-1L]) for (coordinate in config$coordinates) {
-    x <- object$samples[[method]][, coordinate]
-    if (length(unique(x)) < 2L) {
-      message("Bulk ESS undefined for ", method, ", ", coordinate, ": constant sequence")
-      estimate <- NA_real_
-    } else estimate <- as.numeric(posterior::ess_bulk(matrix(x, ncol = 1L)))[1L]
-    bulk[[length(bulk) + 1L]] <- data.frame(method = method, coordinate = coordinate, ess_bulk = estimate)
-  }
-  diagnostics$coordinate_bulk_ess <- do.call(rbind, bulk)
   diagnostics$efficiency_estimators <- do.call(rbind, lapply(methods[-1L], function(method) {
-    bulk_minimum <- min(diagnostics$coordinate_bulk_ess$ess_bulk[
-      diagnostics$coordinate_bulk_ess$method == method
-    ])
     mean_minimum <- min(ess$ess_mean[ess$method == method & ess$statistic %in% config$coordinates])
     evaluations <- object$sample_info[[method]]$selector_evaluations
     data.frame(
-      method = method, posterior_bulk_minimum = bulk_minimum,
-      posterior_bulk_per_1000 = 1000 * bulk_minimum / evaluations,
+      method = method,
       ess_mean_minimum = mean_minimum, ess_mean_per_1000 = 1000 * mean_minimum / evaluations,
       reference_per_1000 = 1000 * nrow(object$samples$Rejection) /
         object$sample_info$Rejection$selector_evaluations
@@ -237,6 +185,10 @@ analyze_validation_lasso <- function(object) {
       min(ess$ess_mean[ess$method == method & ess$statistic %in% config$coordinates])
     }, numeric(1L)), methods[-1L])
   )
+  object$summary$coordinate_maximum_mcse_mean <- setNames(vapply(methods[-1L], function(method) {
+    max(ess$mcse_mean[ess$method == method & ess$statistic %in% config$coordinates])
+  }, numeric(1L)), methods[-1L])
+  object$config$sampler$ess <- "minimum coordinate posterior::ess_basic(split = TRUE)"
   object
 }
 

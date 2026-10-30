@@ -1,49 +1,129 @@
 # PMMH for selective inference: experiment code
 
-This repository contains finalized experiment code and numerical results for
-pseudo-marginal selective inference. Each experiment is self-contained. The
-two applications include sampling-efficiency tables, global-null calibration,
-directional-power figures, and sampling-validation analyses and coordinate ECDFs;
-the Gaussian file-drawer experiment includes its
-paper figure. The two power figures use the shared `plot_style.R`.
+R implementations and frozen results for pseudo-marginal selective inference:
 
-- [Gaussian file drawer](experiments/file_drawer/README_fd.md)
-- [CV-Lasso](experiments/cv_lasso/README_lasso.md)
-- [Changepoint](experiments/changepoint/README_cp.md)
+- [Gaussian file drawer](experiments/file_drawer/README_fd.md): fixed-accuracy
+  sampling complexity.
+- [CV-Lasso](experiments/cv_lasso/README_lasso.md): sampling efficiency,
+  quadratic-null inference, directional inference, and sampling validation.
+- [Changepoint](experiments/changepoint/README_cp.md): the same four applications
+  of the selective-inference workflow.
 
-The CV-Lasso and changepoint applications are divided into sampling efficiency,
-global-null inference, non-null inference, and sampling-validation directories;
-all four directories are organized as runnable public code. Sampling validation
-supports plotting and offline diagnostics from supplied full samples, with
-sampling available only by explicit request. The supplied RDS files contain the frozen
-paper results. Simulation
-entry points write to a user-specified new file and refuse to overwrite an
-existing result. Run commands from the corresponding experiment directory.
+## Dependencies
 
-## Data and Git LFS
+The verified diagnostic environment is R 4.4.3 with `posterior` 1.7.0.
+Diagnostic calculations require that posterior version; other R versions
+produce a warning rather than an unconditional version error. Mean diagnostics
+are defined in `diagnostics.R`.
 
-Git and Git LFS are required to obtain the two large CV-Lasso inference files:
+Inference figures use `ggplot2` 4.0.3, `patchwork` 1.3.0, and R with Cairo PDF
+support. Pure plotting and frozen efficiency tables do not require posterior.
+CV-Lasso data preparation and sampling additionally require `glmnet`; see each
+experiment README for its dependencies and historical version information.
+Nothing is installed automatically.
+
+## Get the code and LFS data
+
+Git and Git LFS are needed for these two files:
 
 - `experiments/cv_lasso/inference_null/inference_null_lasso.rds`
-  (34,423,726 bytes, about 32.83 MiB).
 - `experiments/cv_lasso/inference_nonnull/inference_nonnull_lasso.rds`
-  (140,486,247 bytes, about 133.98 MiB).
 
-Only these two exact paths use Git LFS; other RDS files use ordinary Git.
-After installing Git and Git LFS, clone and configure the clone locally:
+Only these exact paths use LFS; the other RDS files use ordinary Git.
 
 ```sh
-git clone "<repository-url>" pmmh-selective-inference
+git clone https://github.com/jialihe927-maker/pmmh-selective-inference.git
 cd pmmh-selective-inference
 git lfs install --local
 git lfs pull
 ```
 
-Replace `<repository-url>` with the published repository URL. Keep the downloaded
-RDS files at the paths above; the existing plotting and inference commands then
-apply without conversion. A small text file whose first line is
-`version https://git-lfs.github.com/spec/v1` is an LFS pointer, not the complete
-RDS: run `git lfs pull` from the clone if the data were not downloaded.
-Do not assume that GitHub's Download ZIP includes the full LFS data.
-Remote LFS upload and clean-clone download have not yet been verified.
+Keep the downloaded files at their existing paths. A small text file beginning
+with `version https://git-lfs.github.com/spec/v1` is only a pointer; run
+`git lfs pull` to obtain its RDS data. Do not assume Download ZIP includes the
+complete LFS files.
+
+## Offline reproduction
+
+The root scripts separate shared diagnostics (`diagnostics.R`), offline
+summaries (`reproduce.R`), panel composition (`plot_inference.R`), and shared
+figure geometry and typography (`plot_style.R`).
+
+Run from the repository root:
+
+```sh
+Rscript reproduce.R
+Rscript reproduce.R ../recomputed-output
+Rscript plot_inference.R ../inference-figures
+```
+
+The default `reproduce.R` command reads frozen inputs and prints the two
+efficiency tables, quadratic-null and directional rejection rates, coordinate
+mean diagnostics, and the pooled inference-indicator diagnostic table. It
+checks the trajectory archive against all four inference result objects.
+It does not generate data, call selectors, sample chains, or write files.
+
+An explicit output directory additionally receives derived CSV tables
+(including per-test and per-signal diagnostics) and six inference PDFs.
+`plot_inference.R` only produces those six PDFs:
+
+- `inference_null_lasso.pdf`, `inference_nonnull_lasso.pdf`
+- `inference_null_cp.pdf`, `inference_nonnull_cp.pdf`
+- `Figure_CV_Inference_combined.pdf`, `Figure_CP_Inference_combined.pdf`
+
+The combined figures reuse the same panel objects and data as the independent
+figures. Numerical inputs already read by `reproduce.R` are reused for plotting.
+Exports in a chosen output directory are replaced on repeated runs; frozen
+RDS inputs are never overwritten.
+
+File-drawer and sampling-validation figures have separate plotting entries;
+they are not generated by the root workflow:
+
+```sh
+Rscript experiments/file_drawer/plot_fd.R
+Rscript experiments/cv_lasso/sampling_validation/plot_sampling_validation_lasso.R
+Rscript experiments/changepoint/sampling_validation/plot_sampling_validation_cp.R
+```
+
+These commands redraw their supplied PDFs. The linked experiment READMEs also
+describe alternate result paths, frozen-bank inference, and explicit complete
+bank-generation and sampling commands. Those long-running commands are separate
+from offline reproduction and refuse existing numerical output files.
+No manuscript sources are needed or included.
+
+## Statistical conventions and reproduction limits
+
+All current mean diagnostics use one ordered statistic sequence per call:
+`posterior::ess_basic(matrix(as.numeric(x), ncol = 1L), split = TRUE)` and
+`posterior::mcse_mean()` on the same matrix. Holding states are retained; no
+thinning or pooling of unrelated trajectories is performed.
+
+Efficiency is `1000 * minimum_coordinate_mean_ESS / N_query`.
+The PM/CPM denominator includes all 20,000 selector evaluations, including
+500 warm-up evaluations but excluding extra initialization verification.
+Rejection uses 3,000,000 attempts per application. The rare-event Gaussian
+centers differ from inference's zero-mean references; their definitions are in
+the [CV-Lasso efficiency README](experiments/cv_lasso/efficiency_comparison/README_efficiency_lasso.md)
+and [Changepoint efficiency README](experiments/changepoint/efficiency_comparison/README_efficiency_cp.md).
+
+Sampling validation reports the minimum mean ESS and maximum mean MCSE
+independently across coordinates. Inference diagnostics use the actual
+inclusive upper-tail test indicators, not coordinate ESS or bulk ESS.
+Nonfinite ESS and MCSE remain missing and are excluded independently from
+their respective medians; the underlying p-values are not removed.
+Splitting one trajectory for diagnostics does not create independently
+initialized chains or establish convergence.
+
+`inference_trajectories.rds` stores ordered production **statistic** sequences,
+test identities, and source records, not complete target/auxiliary chains.
+Its 3,400 trajectories support 3,800 test records: 400 Proposed trajectories
+are reused for both quadratic-null and directional tests at zero signal.
+Source hashes identify research inputs, not the release result RDS files.
+Directional summaries include zero and four positive signals. The Changepoint
+directional comparison is Proposed versus Data splitting.
+
+Frozen inputs support the offline calculations above. Exact historical
+sampling software and RNG information are available only where documented by
+each experiment; a new complete run does not imply bitwise reconstruction of
+the supplied results.
 

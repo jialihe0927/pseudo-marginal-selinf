@@ -38,8 +38,15 @@ posterior_median <- function(a, b) {
 }
 
 checkpoint_grid <- function(maximum_observations, log_step = log(1.05)) {
-  if (maximum_observations < 1L) {
-    stop("maximum_observations must be positive.")
+  if (length(maximum_observations) != 1L ||
+      !is.numeric(maximum_observations) || !is.finite(maximum_observations) ||
+      maximum_observations < 2 || maximum_observations != floor(maximum_observations) ||
+      maximum_observations > .Machine$integer.max) {
+    stop("maximum_observations must be an integer from 2 to .Machine$integer.max.")
+  }
+  if (length(log_step) != 1L || !is.numeric(log_step) ||
+      !is.finite(log_step) || log_step <= 0) {
+    stop("checkpoint_log_step must be finite and positive.")
   }
   sort(unique(c(
     1L,
@@ -65,6 +72,29 @@ estimate_fixed_accuracy <- function(method, a, b, rho, proposal_scale,
                                     post_certification_checkpoints,
                                     seed,
                                     checkpoint_log_step = log(1.05)) {
+  method <- match.arg(method, c("Independent PM", "CPM"))
+  if (length(n_chains) != 1L || !is.numeric(n_chains) ||
+      !is.finite(n_chains) || n_chains < 2 || n_chains != floor(n_chains)) {
+    stop("n_chains must be an integer of at least 2.")
+  }
+  if (length(stable_checkpoints) != 1L || !is.numeric(stable_checkpoints) ||
+      !is.finite(stable_checkpoints) || stable_checkpoints < 1 ||
+      stable_checkpoints != floor(stable_checkpoints)) {
+    stop("stable_checkpoints must be a positive integer.")
+  }
+  if (length(post_certification_checkpoints) != 1L ||
+      !is.numeric(post_certification_checkpoints) ||
+      !is.finite(post_certification_checkpoints) ||
+      post_certification_checkpoints < 0 ||
+      post_certification_checkpoints != floor(post_certification_checkpoints)) {
+    stop("post_certification_checkpoints must be a nonnegative integer.")
+  }
+  if (length(epsilon) != 1L || !is.numeric(epsilon) ||
+      !is.finite(epsilon) || epsilon <= 0 || epsilon >= 1) {
+    stop("epsilon must be finite and strictly between 0 and 1.")
+  }
+
+  # Validate the grid before the median calculation or random initialization.
   checkpoints <- checkpoint_grid(
     maximum_observations,
     log_step = checkpoint_log_step
@@ -77,7 +107,7 @@ estimate_fixed_accuracy <- function(method, a, b, rho, proposal_scale,
   stop_index <- length(checkpoints)
   final_index <- 1L
 
-  for (checkpoint_index in seq.int(2L, length(checkpoints))) {
+  for (checkpoint_index in seq_along(checkpoints)[-1L]) {
     state <- advance_chains(
       state = state,
       method = method,
@@ -120,7 +150,10 @@ estimate_fixed_accuracy <- function(method, a, b, rho, proposal_scale,
     stable_checkpoints
   )
 
-  data.frame(
+  # complexity_n includes the initial observation and precedes certification.
+  # The budget counts proposal event evaluations across all chains, excluding
+  # exact-initialization validation and checkpoint integrity checks.
+  estimate <- data.frame(
     b = b,
     method = method,
     a = a,
@@ -134,6 +167,14 @@ estimate_fixed_accuracy <- function(method, a, b, rho, proposal_scale,
     estimate_type = "stable crossing start",
     result_type = "simulation",
     stringsAsFactors = FALSE
+  )
+
+  list(
+    estimate = estimate,
+    checkpoints = data.frame(
+      observations = checkpoints,
+      variance_ratio = variance_ratio
+    )
   )
 }
 

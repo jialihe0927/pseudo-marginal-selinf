@@ -1,6 +1,8 @@
+# Configuration and delta-zero compatibility
+
 default_config_nonnull_lasso <- function() {
   list(
-    application = "cv_lasso", delta_grid = c(0.2, 0.3, 0.4, 0.5),
+    application = "cv_lasso", delta_grid = c(0, 0.2, 0.3, 0.4, 0.5),
     datasets_per_delta = 200L, n = 200L, p = 100L,
     design_correlation = 0.5, response_sd = 1, randomization_sd = 0.15,
     signal_direction = c(1, -0.8, 0.6, -0.5, 0.4, rep(0, 95L)),
@@ -32,42 +34,96 @@ default_config_nonnull_lasso <- function() {
       kind = c("L'Ecuyer-CMRG", "Inversion", "Rejection"),
       generation_seeds = c(20461016L, 20561016L, 20661016L, 20761016L),
       inference_master = 20261022L,
+      null_generation_master = 2026999901L,
+      null_proposed_master = 2026999902L,
+      null_extra_master = 20261028L,
       # The preceding signal group occupied streams 1:400 in the formal run.
       inference_stream_offset = 400L
     )
   )
 }
 
-with_rng_nonnull_lasso <- function(fun, seed = NULL, state = NULL,
-                                   kind = c("L'Ecuyer-CMRG", "Inversion", "Rejection")) {
-  old_kind <- RNGkind()
-  had_seed <- exists(".Random.seed", envir = .GlobalEnv, inherits = FALSE)
-  if (had_seed) old_seed <- get(".Random.seed", envir = .GlobalEnv)
-  on.exit({
-    do.call(RNGkind, as.list(old_kind))
-    if (had_seed) {
-      assign(".Random.seed", old_seed, envir = .GlobalEnv)
-    } else if (exists(".Random.seed", envir = .GlobalEnv, inherits = FALSE)) {
-      rm(".Random.seed", envir = .GlobalEnv)
-    }
-  }, add = TRUE)
-  do.call(RNGkind, as.list(kind))
-  if (is.null(state)) set.seed(as.integer(seed))
-  else assign(".Random.seed", as.integer(state), envir = .GlobalEnv)
-  fun()
+validate_config_nonnull_lasso <- function(config) {
+  if (!is.numeric(config$response_sd) || length(config$response_sd) != 1L ||
+      !is.finite(config$response_sd) || config$response_sd != 1) {
+    stop("CV-Lasso inference currently requires response_sd = 1 (unit response noise).")
+  }
+  reference <- default_config_nonnull_lasso()
+  if (!identical(config$application, "cv_lasso") ||
+      !identical(config$methods, reference$methods) ||
+      !identical(config$sampled_methods, reference$sampled_methods)) {
+    stop("The application or method definitions are incompatible.")
+  }
+  n <- config$datasets_per_delta
+  if (length(n) != 1L || !is.finite(n) || n < 1L || n != as.integer(n)) {
+    stop("datasets_per_delta must be a positive integer.")
+  }
+  if (!identical(config$delta_grid, reference$delta_grid) ||
+      length(config$signal_direction) != config$p) {
+    stop("The signal grid or direction is incompatible.")
+  }
+  pmmh <- config$pmmh
+  lengths <- unlist(pmmh[c("warmup", "stabilization", "production", "total_transitions")])
+  if (any(!is.finite(lengths)) || any(lengths != as.integer(lengths)) ||
+      pmmh$warmup <= 0L || pmmh$production <= 0L || pmmh$stabilization != 0L ||
+      pmmh$warmup + pmmh$production != pmmh$total_transitions ||
+      pmmh$auxiliary_samples != 1L) {
+    stop("Invalid PMMH lengths; stabilization must be zero and auxiliary_samples one.")
+  }
+  if (!is.finite(pmmh$rho) || pmmh$rho < 0 || pmmh$rho >= 1 ||
+      pmmh$scale_min <= 0 || pmmh$scale_min > pmmh$scale_initial ||
+      pmmh$scale_initial > pmmh$scale_max || pmmh$target_acceptance <= 0 ||
+      pmmh$target_acceptance >= 1) {
+    stop("Invalid auxiliary correlation, proposal scales, or adaptation target.")
+  }
+  if (config$n %% config$folds != 0L || length(config$lambda_grid) != 32L ||
+      any(!is.finite(config$lambda_grid)) || any(diff(config$lambda_grid) >= 0)) {
+    stop("Invalid fixed folds or lambda grid.")
+  }
+  null_config_nonnull_lasso(config)
+  invisible(config)
 }
 
-rng_streams_nonnull_lasso <- function(seed, count) {
-  with_rng_nonnull_lasso(function() {
-    streams <- vector("list", count)
-    state <- get(".Random.seed", envir = .GlobalEnv)
-    for (index in seq_len(count)) {
-      streams[[index]] <- as.integer(state)
-      state <- parallel::nextRNGStream(state)
+null_config_nonnull_lasso <- function(config) {
+  # Delta zero reuses the null bank and kernel only for these shared settings.
+  null <- default_config_null_lasso()
+  expected_rng <- unname(unlist(null$rng[c("kind", "normal_kind", "sample_kind")]))
+  if (!identical(config$rng$kind, expected_rng)) {
+    stop("Delta-zero reuse requires the null RNG kinds: L'Ecuyer-CMRG, Inversion, Rejection.")
+  }
+  shared <- c(
+    "n", "p", "design_correlation", "response_sd", "randomization_sd",
+    "folds", "lambda_grid", "coefficient_tolerance", "glmnet_threshold",
+    "dimension_range"
+  )
+  for (field in shared) {
+    if (!is.numeric(config[[field]]) ||
+        !identical(as.numeric(config[[field]]), as.numeric(null[[field]]))) {
+      stop("Delta-zero reuse requires the null configuration's ", field, ".")
     }
-    streams
-  }, seed = seed)
+  }
+
+  null$dataset_count <- config$datasets_per_delta
+  null$test_level <- config$test_level
+  null$rng$raw_master_seed <- config$rng$null_generation_master
+  null$rng$formal_master_seed <- config$rng$null_proposed_master
+  # Different field names refer to the same scalar proposal and adaptation settings.
+  pmmh <- config$pmmh
+  null$pmmh$warmup <- pmmh$warmup
+  null$pmmh$stabilization <- pmmh$stabilization
+  null$pmmh$production <- pmmh$production
+  null$pmmh$total_transitions <- pmmh$total_transitions
+  null$pmmh$auxiliary_samples <- pmmh$auxiliary_samples
+  null$pmmh$rho <- pmmh$rho
+  null$pmmh$target_acceptance <- pmmh$target_acceptance
+  null$pmmh$proposal_scale_initial <- pmmh$scale_initial
+  null$pmmh$proposal_scale_min <- pmmh$scale_min
+  null$pmmh$proposal_scale_max <- pmmh$scale_max
+  validate_config_null_lasso(null)
+  null
 }
+
+# Selector and conditioning events
 
 select_nonnull_lasso <- function(Y, W, X, fold_id, config, context = "selector") {
   # Warnings remain visible, with the dataset/method context when available.
@@ -108,6 +164,21 @@ select_nonnull_lasso <- function(Y, W, X, fold_id, config, context = "selector")
   )
 }
 
+selection_event_nonnull_lasso <- function(T, U, dataset, method_id, config) {
+  if (!method_id %in% config$sampled_methods) stop("Unknown Lasso sampling method: ", method_id)
+  Y <- as.numeric(dataset$target$C_M %*% as.numeric(T) + as.numeric(dataset$target$Z_obs))
+  selected <- select_nonnull_lasso(
+    Y, config$randomization_sd * as.numeric(U), dataset$X, dataset$fold_id, config,
+    paste0("delta=", dataset$delta, ", dataset_id=", dataset$dataset_id, ", method=", method_id)
+  )
+  same_model <- identical(selected$selected_model, dataset$selected_model)
+  if (method_id == "model_only") return(same_model)
+  same_model && identical(selected$selected_signs, dataset$selected_signs) &&
+    identical(selected$lambda_index, dataset$lambda_index)
+}
+
+# Conditional target, direction and analytic data splitting
+
 build_target_nonnull_lasso <- function(dataset, config) {
   X_M <- dataset$X[, dataset$selected_model, drop = FALSE]
   if (qr(X_M, tol = config$rank_tolerance)$rank != dataset$d) {
@@ -143,17 +214,64 @@ statistic_nonnull_lasso <- function(T, direction) {
   as.numeric(as.matrix(T) %*% direction$precision_a) / direction$denominator
 }
 
-selection_event_nonnull_lasso <- function(T, U, dataset, method_id, config) {
-  if (!method_id %in% config$sampled_methods) stop("Unknown Lasso sampling method: ", method_id)
-  Y <- as.numeric(dataset$target$C_M %*% as.numeric(T) + as.numeric(dataset$target$Z_obs))
-  selected <- select_nonnull_lasso(
-    Y, config$randomization_sd * as.numeric(U), dataset$X, dataset$fold_id, config,
-    paste0("delta=", dataset$delta, ", dataset_id=", dataset$dataset_id, ", method=", method_id)
+fission_statistic_nonnull_lasso <- function(dataset, config) {
+  Y_fission <- as.numeric(dataset$Y - config$randomization_sd^(-2) * dataset$W)
+  # The formal matched baseline solves the normal equations directly.
+  gram <- crossprod(dataset$target$X_M)
+  T_fission <- as.numeric(solve(gram, crossprod(dataset$target$X_M, Y_fission)))
+  statistic_nonnull_lasso(T_fission, dataset$direction)
+}
+
+fission_pvalue_nonnull_lasso <- function(
+    dataset, config, score = fission_statistic_nonnull_lasso(dataset, config)) {
+  stats::pnorm(score / sqrt(1 + config$randomization_sd^(-2)), lower.tail = FALSE)
+}
+
+convert_null_nonnull_lasso <- function(dataset, config, selected_signs) {
+  converted <- list(
+    delta = 0, dataset_id = dataset$dataset_id, raw_id = dataset$raw_id,
+    X = dataset$design, Y = dataset$response, W = dataset$randomization,
+    fold_id = dataset$fold_id, selected_model = dataset$selected_model,
+    selected_signs = as.integer(selected_signs), lambda_index = dataset$lambda_index,
+    lambda_observed = dataset$lambda_observed, d = dataset$target_dimension,
+    generation_rng_state = dataset$generation_rng_state
   )
-  same_model <- identical(selected$selected_model, dataset$selected_model)
-  if (method_id == "model_only") return(same_model)
-  same_model && identical(selected$selected_signs, dataset$selected_signs) &&
-    identical(selected$lambda_index, dataset$lambda_index)
+  converted$target <- build_target_nonnull_lasso(converted, config)
+  converted$direction <- build_direction_nonnull_lasso(converted, config)
+  converted
+}
+
+# Raw attempts, eligible bank and task streams
+
+with_rng_nonnull_lasso <- function(fun, seed = NULL, state = NULL,
+                                   kind = c("L'Ecuyer-CMRG", "Inversion", "Rejection")) {
+  old_kind <- RNGkind()
+  had_seed <- exists(".Random.seed", envir = .GlobalEnv, inherits = FALSE)
+  if (had_seed) old_seed <- get(".Random.seed", envir = .GlobalEnv)
+  on.exit({
+    do.call(RNGkind, as.list(old_kind))
+    if (had_seed) {
+      assign(".Random.seed", old_seed, envir = .GlobalEnv)
+    } else if (exists(".Random.seed", envir = .GlobalEnv, inherits = FALSE)) {
+      rm(".Random.seed", envir = .GlobalEnv)
+    }
+  }, add = TRUE)
+  do.call(RNGkind, as.list(kind))
+  if (is.null(state)) set.seed(as.integer(seed))
+  else assign(".Random.seed", as.integer(state), envir = .GlobalEnv)
+  fun()
+}
+
+rng_streams_nonnull_lasso <- function(seed, count) {
+  with_rng_nonnull_lasso(function() {
+    streams <- vector("list", count)
+    state <- get(".Random.seed", envir = .GlobalEnv)
+    for (index in seq_len(count)) {
+      streams[[index]] <- as.integer(state)
+      state <- parallel::nextRNGStream(state)
+    }
+    streams
+  }, seed = seed)
 }
 
 generate_attempt_nonnull_lasso <- function(delta, raw_id, state, config) {
@@ -193,19 +311,29 @@ generate_attempt_nonnull_lasso <- function(delta, raw_id, state, config) {
 }
 
 assign_rng_nonnull_lasso <- function(datasets, config) {
-  count <- length(datasets) * length(config$sampled_methods)
+  count <- sum(vapply(datasets, function(dataset) dataset$delta > 0, logical(1))) * length(config$sampled_methods)
   streams <- rng_streams_nonnull_lasso(
     config$rng$inference_master, config$rng$inference_stream_offset + count
   )
   rows <- list()
+  positive_index <- 0L
+  null_proposed <- rng_streams_nonnull_lasso(config$rng$null_proposed_master, 2L * config$datasets_per_delta)
+  null_extra <- rng_streams_nonnull_lasso(config$rng$null_extra_master, config$datasets_per_delta)
   for (dataset in datasets) for (method_id in config$sampled_methods) {
     index <- length(rows) + 1L
-    stream_id <- config$rng$inference_stream_offset + index
+    if (dataset$delta == 0) {
+      stream_id <- if (method_id == "model_only") 2L * dataset$dataset_id - 1L else dataset$dataset_id
+      state <- if (method_id == "model_only") null_proposed[[stream_id]] else null_extra[[stream_id]]
+    } else {
+      positive_index <- positive_index + 1L
+      stream_id <- config$rng$inference_stream_offset + positive_index
+      state <- streams[[stream_id]]
+    }
     row <- data.frame(
       delta = dataset$delta, dataset_id = dataset$dataset_id, raw_id = dataset$raw_id,
       method_id = method_id, stream_id = stream_id, stringsAsFactors = FALSE
     )
-    row$rng_state <- I(list(streams[[stream_id]]))
+    row$rng_state <- I(list(state))
     rows[[index]] <- row
   }
   do.call(rbind, rows)
@@ -216,7 +344,19 @@ prepare_bank_nonnull_lasso <- function(config = default_config_nonnull_lasso()) 
   datasets <- list()
   raw_attempts <- integer(length(config$delta_grid))
   for (group in seq_along(config$delta_grid)) {
-    streams <- rng_streams_nonnull_lasso(config$rng$generation_seeds[group], config$raw_attempt_limit)
+    if (config$delta_grid[group] == 0) {
+      null_config <- null_config_nonnull_lasso(config)
+      null_bank <- prepare_bank_null_lasso(null_config)
+      for (dataset in null_bank$datasets) {
+        observed <- select_nonnull_lasso(dataset$response, dataset$randomization,
+                                         dataset$design, dataset$fold_id, config)
+        datasets[[length(datasets) + 1L]] <- convert_null_nonnull_lasso(dataset, config, observed$selected_signs)
+      }
+      raw_attempts[group] <- null_bank$raw_attempts
+      next
+    }
+    positive_group <- match(config$delta_grid[group], config$delta_grid[config$delta_grid > 0])
+    streams <- rng_streams_nonnull_lasso(config$rng$generation_seeds[positive_group], config$raw_attempt_limit)
     retained <- 0L
     for (raw_id in seq_len(config$raw_attempt_limit)) {
       dataset <- generate_attempt_nonnull_lasso(config$delta_grid[group], raw_id, streams[[raw_id]], config)
@@ -235,52 +375,48 @@ prepare_bank_nonnull_lasso <- function(config = default_config_nonnull_lasso()) 
   bank
 }
 
-fission_statistic_nonnull_lasso <- function(dataset, config) {
-  Y_fission <- as.numeric(dataset$Y - config$randomization_sd^(-2) * dataset$W)
-  # The formal matched baseline solves the normal equations directly.
-  gram <- crossprod(dataset$target$X_M)
-  T_fission <- as.numeric(solve(gram, crossprod(dataset$target$X_M, Y_fission)))
-  statistic_nonnull_lasso(T_fission, dataset$direction)
+# Summaries and paired-result checks
+
+result_row_nonnull_lasso <- function(dataset, method_id, p_value, config,
+                                         tail_count = NA_integer_,
+                                         production_draws = NA_integer_,
+                                         result_type = "analytic",
+                                         selector_evaluations = 0L,
+                                         statistic_observed = NULL) {
+  if (is.null(statistic_observed)) {
+    statistic_observed <- if (method_id == "data_fission") {
+      fission_statistic_nonnull_lasso(dataset, config)
+    } else {
+      statistic_nonnull_lasso(dataset$target$T_obs, dataset$direction)
+    }
+  }
+  data.frame(
+    delta = dataset$delta, dataset_id = dataset$dataset_id, raw_id = dataset$raw_id,
+    method_id = method_id, target_id = "selected_model_projection",
+    target_dimension = dataset$d,
+    statistic_observed = statistic_observed,
+    p_value = p_value, reject = as.integer(p_value <= config$test_level),
+    tail_count = tail_count, production_draws = production_draws,
+    result_type = result_type, status = "complete",
+    selector_evaluations = selector_evaluations, stringsAsFactors = FALSE
+  )
 }
 
-fission_pvalue_nonnull_lasso <- function(dataset, config) {
-  score <- fission_statistic_nonnull_lasso(dataset, config)
-  stats::pnorm(score / sqrt(1 + config$randomization_sd^(-2)), lower.tail = FALSE)
-}
-validate_config_nonnull_lasso <- function(config) {
-  reference <- default_config_nonnull_lasso()
-  if (!identical(config$application, "cv_lasso") ||
-      !identical(config$methods, reference$methods) ||
-      !identical(config$sampled_methods, reference$sampled_methods)) {
-    stop("The application or method definitions are incompatible.")
+summarize_nonnull_lasso <- function(data, config) {
+  rows <- list()
+  for (delta in config$delta_grid) for (method_id in config$methods) {
+    selected <- data[data$delta == delta & data$method_id == method_id, , drop = FALSE]
+    n <- nrow(selected)
+    rejections <- sum(selected$reject)
+    power <- rejections / n
+    se <- sqrt(power * (1 - power) / n)
+    rows[[length(rows) + 1L]] <- data.frame(
+      delta = delta, method_id = method_id, n = n, rejections = rejections,
+      power = power, se = se, lower = power - se, upper = power + se,
+      stringsAsFactors = FALSE
+    )
   }
-  n <- config$datasets_per_delta
-  if (length(n) != 1L || !is.finite(n) || n < 1L || n != as.integer(n)) {
-    stop("datasets_per_delta must be a positive integer.")
-  }
-  if (!identical(config$delta_grid, reference$delta_grid) ||
-      length(config$signal_direction) != config$p) {
-    stop("The signal grid or direction is incompatible.")
-  }
-  pmmh <- config$pmmh
-  lengths <- unlist(pmmh[c("warmup", "stabilization", "production", "total_transitions")])
-  if (any(!is.finite(lengths)) || any(lengths != as.integer(lengths)) ||
-      pmmh$warmup <= 0L || pmmh$production <= 0L || pmmh$stabilization != 0L ||
-      pmmh$warmup + pmmh$production != pmmh$total_transitions ||
-      pmmh$auxiliary_samples != 1L) {
-    stop("Invalid PMMH lengths; stabilization must be zero and auxiliary_samples one.")
-  }
-  if (!is.finite(pmmh$rho) || pmmh$rho < 0 || pmmh$rho >= 1 ||
-      pmmh$scale_min <= 0 || pmmh$scale_min > pmmh$scale_initial ||
-      pmmh$scale_initial > pmmh$scale_max || pmmh$target_acceptance <= 0 ||
-      pmmh$target_acceptance >= 1) {
-    stop("Invalid auxiliary correlation, proposal scales, or adaptation target.")
-  }
-  if (config$n %% config$folds != 0L || length(config$lambda_grid) != 32L ||
-      any(!is.finite(config$lambda_grid)) || any(diff(config$lambda_grid) >= 0)) {
-    stop("Invalid fixed folds or lambda grid.")
-  }
-  invisible(config)
+  list(power = do.call(rbind, rows))
 }
 
 validate_bank_nonnull_lasso <- function(bank) {
@@ -357,23 +493,6 @@ validate_bank_nonnull_lasso <- function(bank) {
   invisible(bank)
 }
 
-summarize_nonnull_lasso <- function(data, config) {
-  rows <- list()
-  for (delta in config$delta_grid) for (method_id in config$methods) {
-    selected <- data[data$delta == delta & data$method_id == method_id, , drop = FALSE]
-    n <- nrow(selected)
-    rejections <- sum(selected$reject)
-    power <- rejections / n
-    se <- sqrt(power * (1 - power) / n)
-    rows[[length(rows) + 1L]] <- data.frame(
-      delta = delta, method_id = method_id, n = n, rejections = rejections,
-      power = power, se = se, lower = power - se, upper = power + se,
-      stringsAsFactors = FALSE
-    )
-  }
-  list(power = do.call(rbind, rows))
-}
-
 validate_result_nonnull_lasso <- function(result) {
   validate_bank_nonnull_lasso(result)
   if (!all(c("dataset_results", "summary") %in% names(result))) stop("Inference results are missing.")
@@ -434,25 +553,4 @@ validate_result_nonnull_lasso <- function(result) {
     stop("The power summary does not match the paired dataset-level decisions.")
   }
   invisible(result)
-}
-
-result_row_nonnull_lasso <- function(dataset, method_id, p_value, config,
-                                         tail_count = NA_integer_,
-                                         production_draws = NA_integer_,
-                                         result_type = "analytic",
-                                         selector_evaluations = 0L) {
-  data.frame(
-    delta = dataset$delta, dataset_id = dataset$dataset_id, raw_id = dataset$raw_id,
-    method_id = method_id, target_id = "selected_model_projection",
-    target_dimension = dataset$d,
-    statistic_observed = if (method_id == "data_fission") {
-      fission_statistic_nonnull_lasso(dataset, config)
-    } else {
-      statistic_nonnull_lasso(dataset$target$T_obs, dataset$direction)
-    },
-    p_value = p_value, reject = as.integer(p_value <= config$test_level),
-    tail_count = tail_count, production_draws = production_draws,
-    result_type = result_type, status = "complete",
-    selector_evaluations = selector_evaluations, stringsAsFactors = FALSE
-  )
 }

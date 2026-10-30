@@ -1,7 +1,15 @@
-options(stringsAsFactors = FALSE)
-
 suppressPackageStartupMessages(library(ggplot2))
-source("functions_null_lasso.R", local = TRUE)
+panel_file <- if (sys.nframe() > 0L) {
+  files <- vapply(sys.frames(), function(frame) {
+    if (is.null(frame$ofile)) "" else as.character(frame$ofile)
+  }, character(1L))
+  tail(files[nzchar(files)], 1L)
+} else {
+  sub("^--file=", "", grep("^--file=", commandArgs(FALSE), value = TRUE)[1L])
+}
+panel_directory <- dirname(panel_file)
+source(file.path(panel_directory, "functions_null_lasso.R"), local = TRUE)
+source(file.path(panel_directory, "../../../plot_style.R"), local = TRUE)
 
 step_ribbon_data <- function(data) {
   data <- data[order(data$x), , drop = FALSE]
@@ -77,7 +85,7 @@ make_inference_figure <- function(result) {
     naive_gaussian = "#9A86B2"
   )
   shapes <- c(model_only = 16, fixed_lambda = 17, naive_gaussian = 4)
-  labels <- expression("Model-only", "Fixed-" * lambda, "Naive")
+  labels <- expression("Proposed", "Fixed-" * lambda, "Naive")
 
   ggplot(plot_data, aes(x = x, y = ecdf, group = method_id)) +
     geom_ribbon(
@@ -127,55 +135,46 @@ make_inference_figure <- function(result) {
       labels = labels,
       drop = FALSE
     ) +
-    scale_x_continuous(breaks = seq(0, 1, 0.2), expand = expansion(mult = 0)) +
-    scale_y_continuous(breaks = seq(0, 1, 0.2), expand = expansion(mult = 0)) +
+    scale_x_continuous(
+      breaks = seq(0, 1, 0.2), labels = inference_tick_labels,
+      expand = expansion(mult = 0)
+    ) +
+    scale_y_continuous(
+      breaks = seq(0, 1, 0.2), labels = inference_tick_labels,
+      expand = expansion(mult = 0)
+    ) +
     coord_cartesian(xlim = c(0, 1), ylim = c(0, 1), clip = "off") +
     labs(x = "P-value", y = "Empirical CDF") +
-    theme_classic(base_size = 13, base_family = "sans") +
-    theme(
-      axis.title = element_text(size = 13.5, color = "#222222"),
-      axis.text = element_text(size = 11.5, color = "#222222"),
-      axis.line = element_line(linewidth = 0.7, color = "#3F3F3F"),
-      axis.ticks = element_line(linewidth = 0.65, color = "#3F3F3F"),
-      axis.ticks.length = grid::unit(4.5, "pt"),
-      panel.background = element_rect(fill = "white", color = NA),
-      plot.background = element_rect(fill = "white", color = NA),
-      panel.grid.major = element_line(color = "grey88", linewidth = 0.35),
-      panel.grid.minor = element_blank(),
-      panel.ontop = FALSE,
-      legend.position = c(0.975, 0.045),
-      legend.justification = c(1, 0),
-      legend.direction = "vertical",
-      legend.background = element_rect(fill = "white", color = "black", linewidth = 0.45),
-      legend.key = element_rect(fill = "white", color = NA),
-      legend.key.width = grid::unit(28, "pt"),
-      legend.key.height = grid::unit(18, "pt"),
-      legend.margin = margin(4, 5, 4, 5, unit = "pt"),
-      legend.text = element_text(size = 12, color = "#222222"),
-      plot.margin = margin(10, 12, 10, 12, unit = "pt")
-    )
+    labs(title = expression(paste("(a) Global-null ", italic(p), "-values"))) +
+    theme_inference_panel() +
+    theme_null_legend()
 }
 
-args <- commandArgs(trailingOnly = TRUE)
-if (length(args) > 1L) {
-  stop("Usage: Rscript plot_inference_null_lasso.R [results.rds]")
-}
-input_path <- if (length(args)) args[[1L]] else "inference_null_lasso.rds"
-if (!file.exists(input_path)) stop("Results file not found: ", input_path)
+main <- function(args = commandArgs(trailingOnly = TRUE)) {
+  if (length(args) > 1L) {
+    stop("Usage: Rscript plot_inference_null_lasso.R [results.rds]")
+  }
+  input_path <- if (length(args)) args[[1L]] else file.path(panel_directory, "inference_null_lasso.rds")
+  if (!file.exists(input_path)) stop("Results file not found: ", input_path)
 
-output_path <- if (identical(input_path, "inference_null_lasso.rds")) {
-  "inference_null_lasso.pdf"
-} else {
-  paste0(tools::file_path_sans_ext(input_path), ".pdf")
+  output_path <- if (identical(input_path, "inference_null_lasso.rds")) {
+    "inference_null_lasso.pdf"
+  } else {
+    paste0(tools::file_path_sans_ext(input_path), ".pdf")
+  }
+
+  figure <- make_inference_figure(readRDS(input_path))
+  ggsave(
+    output_path,
+    figure,
+    width = 3.78,
+    height = 3.6,
+    units = "in",
+    device = cairo_pdf,
+    bg = "white"
+  )
 }
 
-figure <- make_inference_figure(readRDS(input_path))
-ggsave(
-  output_path,
-  figure,
-  width = 6.4,
-  height = 4.4,
-  units = "in",
-  device = cairo_pdf,
-  bg = "white"
-)
+if (sys.nframe() == 0L) {
+  main()
+}

@@ -32,7 +32,7 @@ proposal covariance is `(h_prop^2 / d) * Sigma_T`. The scalar `h_prop` starts at
 is fixed for the 19,500 production transitions. Correlated PMMH uses auxiliary
 correlation 0.8; crude PMMH uses independent refreshment (`rho = 0`). Each
 transition costs one selector evaluation,
-and efficiency is the minimum coordinate bulk ESS divided by all 20,000 calls,
+and efficiency is the minimum raw-coordinate mean ESS divided by all 20,000 calls,
 times 1,000. Rejection uses exactly 3,000,000 candidate attempts in 300 fixed
 10,000-attempt RNG streams; the original run used seven workers. Three million
 is not the number of accepted samples.
@@ -42,8 +42,8 @@ but a new run has ordinary Monte Carlo variation and is not promised to restore
 the historical random stream bit for bit.
 
 The paper table reports `(h_final, efficiency, gain, acceptance, zero rate)` as
-`(--, 0.043, 1.0, --, --)`, `(0.524, 3.260, 75.8, 0.193, 0.717)`, and
-`(0.718, 8.215, 191.1, 0.220, 0.638)` for rejection, crude PMMH, and correlated
+`(--, 0.043, 1.0, --, --)`, `(0.524, 2.904, 67.5, 0.193, 0.717)`, and
+`(0.718, 7.648, 177.9, 0.220, 0.638)` for rejection, crude PMMH, and correlated
 PMMH, respectively.
 
 Here `h_final` is the proposal scale at the end of warm-up, held fixed during
@@ -53,7 +53,20 @@ it is not the holding fraction, since a positive estimate can still be rejected
 by MH. Each formal PM/CPM budget is 20,000 selector evaluations, including
 warm-up but excluding the extra initial selection verification.
 
-Run from this directory:
+Mean ESS uses posterior 1.7.0: `posterior::ess_basic(matrix(as.numeric(x),
+ncol = 1L), split = TRUE)` separately for each production coordinate. Gain is
+computed before rounding. `table_efficiency_lasso.R` prints the table without writing files.
+The observed dataset fixes the design, selected model, folds and nuisance residual.
+The efficiency benchmark separately specifies `mu_eff = T_obs - 3.7*u`, where
+`u = T_obs / sqrt(t(T_obs) %*% solve(Sigma_T, T_obs))`, to make selection rare.
+PM, CPM and rejection share this Gaussian center, covariance and selection event.
+This center differs from the zero-mean inference reference and is not generally
+the projection of the original DGP's true mean. The independent reference has 129 hits.
+The root `reproduce.R` recomputes the table from the full frozen production
+samples in Sampling Validation without calling a selector or sampler.
+
+Run from this directory. The table command reads frozen results; the
+`sampling_efficiency_lasso.R` commands start full simulations:
 
 ```sh
 Rscript table_efficiency_lasso.R

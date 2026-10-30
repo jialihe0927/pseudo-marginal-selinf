@@ -1,11 +1,14 @@
-options(stringsAsFactors = FALSE)
+script_file <- if (sys.nframe() > 0L) {
+  files <- vapply(sys.frames(), function(frame) {
+    if (is.null(frame$ofile)) "" else as.character(frame$ofile)
+  }, character(1L))
+  tail(files[nzchar(files)], 1L)
+} else {
+  sub("^--file=", "", grep("^--file=", commandArgs(FALSE), value = TRUE)[1L])
+}
+script_directory <- dirname(normalizePath(script_file, winslash = "/", mustWork = TRUE))
 
-script_argument <- grep("^--file=", commandArgs(FALSE), value = TRUE)
-if (!length(script_argument)) stop("Run this entry point with Rscript.")
-script_directory <- dirname(sub("^--file=", "", script_argument[[1L]]))
 source(file.path(script_directory, "functions_validation_cp.R"), local = TRUE)
-if (!requireNamespace("ggplot2", quietly = TRUE)) stop("Package 'ggplot2' is required.")
-if (!capabilities("cairo")) stop("Cairo PDF support is required for the paper figure.")
 suppressPackageStartupMessages(library(ggplot2))
 
 make_coordinate_figure_cp <- function(object) {
@@ -103,16 +106,22 @@ make_coordinate_figure_cp <- function(object) {
     )
 }
 
-arguments <- commandArgs(trailingOnly = TRUE)
-if (length(arguments) > 1L) stop("Usage: Rscript plot_sampling_validation_cp.R [input.rds]")
-input_path <- if (length(arguments)) arguments[[1L]] else {
-  file.path(script_directory, "sampling_validation_cp.rds")
+main <- function() {
+  if (!requireNamespace("ggplot2", quietly = TRUE)) stop("Package 'ggplot2' is required.")
+  if (!capabilities("cairo")) stop("Cairo PDF support is required for the paper figure.")
+  arguments <- commandArgs(trailingOnly = TRUE)
+  if (length(arguments) > 1L) stop("Usage: Rscript plot_sampling_validation_cp.R [input.rds]")
+  input_path <- if (length(arguments)) arguments[[1L]] else {
+    file.path(script_directory, "sampling_validation_cp.rds")
+  }
+  if (!file.exists(input_path)) stop("Validation input not found: ", input_path)
+  object <- readRDS(input_path)
+  figure <- make_coordinate_figure_cp(object)
+  ggsave(
+    paste0(tools::file_path_sans_ext(input_path), ".pdf"), figure,
+    width = 12, height = 4, units = "in",
+    device = grDevices::cairo_pdf, bg = "white", limitsize = FALSE
+  )
 }
-if (!file.exists(input_path)) stop("Validation input not found: ", input_path)
-object <- readRDS(input_path)
-figure <- make_coordinate_figure_cp(object)
-ggsave(
-  paste0(tools::file_path_sans_ext(input_path), ".pdf"), figure,
-  width = 12, height = 4, units = "in",
-  device = grDevices::cairo_pdf, bg = "white", limitsize = FALSE
-)
+
+if (sys.nframe() == 0L) main()

@@ -17,24 +17,10 @@ fixed-fold CV-Lasso selection under the global null.
 
 ## Obtain the data
 
-`inference_null_lasso.rds` uses Git LFS and must contain the full 34,423,726-byte
-RDS (about 32.83 MiB), not a pointer. Git and Git LFS are required. To obtain a
-new clone and download its LFS data:
-
-```sh
-git clone "<repository-url>" pmmh-selective-inference
-cd pmmh-selective-inference
-git lfs install --local
-git lfs pull
-```
-
-Replace `<repository-url>` with the published URL. Keep this RDS at
-`experiments/cv_lasso/inference_null/inference_null_lasso.rds` in the clone;
-then use the commands below from this experiment directory. If the file is small
-and starts with `version https://git-lfs.github.com/spec/v1`, run `git lfs pull`
-from the clone to replace the pointer with the complete data. Download ZIP is
-not guaranteed to contain full LFS data. See the [repository data instructions](../../../README.md#data-and-git-lfs).
-Remote LFS upload and clean-clone download have not yet been verified.
+`inference_null_lasso.rds` uses Git LFS. Follow the
+[repository download instructions](../../../README.md#get-the-code-and-lfs-data)
+and keep the complete RDS beside these scripts. A small LFS pointer is not usable
+as an RDS. Plotting and inference then use the commands below.
 
 ## Experiment
 
@@ -42,7 +28,10 @@ Each raw dataset has `n = 200` observations and `p = 100` Gaussian design
 columns with adjacent correlation 0.5. The response is `N(0, I)` and independent
 Gaussian randomization has standard deviation 0.15. The design is column
 centered and scaled to column norm `sqrt(n)`. Ten balanced folds and a fixed
-32-point decreasing lambda grid are used.
+32-point decreasing lambda grid are used. The implementation requires unit
+response noise (`response_sd = 1`); unsupported values are rejected before computation.
+Lambda follows [glmnet's normalization](../README_lasso.md), including the
+training-sample-size scaling in CV.
 
 The frozen bank contains the first 200 eligible raw attempts, in generation order, whose
 observed selected model has dimension 1 through 10. Reaching this bank required
@@ -79,29 +68,49 @@ not installed automatically.
 
 ## Run
 
-Run from this directory.
+New inference requires posterior 1.7.0 for tail-indicator diagnostics; R 4.4.3 is
+the verified environment, with a warning on other R versions. Bank preparation
+and plotting have no posterior version requirement. No packages are installed automatically.
+
+Run from this directory. Redraw the frozen results without sampling:
 
 ```sh
 Rscript plot_inference_null_lasso.R
+```
+
+Run complete inference on the frozen bank, then plot the new results:
+
+```sh
 Rscript inference_null_lasso.R rerun_inference_null_lasso.rds
 Rscript plot_inference_null_lasso.R rerun_inference_null_lasso.rds
+```
+
+Generate a complete bank from raw attempts, run inference, and plot:
+
+```sh
 Rscript prepare_null_lasso.R bank_null_lasso.rds
 Rscript inference_null_lasso.R new_inference_null_lasso.rds bank_null_lasso.rds
 Rscript plot_inference_null_lasso.R new_inference_null_lasso.rds
 ```
 
-The first command redraws the supplied paper result. The second reruns inference
-on the frozen data bank contained in `inference_null_lasso.rds`. The final three
-commands instead build a fresh bank from the recorded raw-attempt streams, run
-inference on that bank, and plot its result. New output paths must not already
-exist.
+Preparation and inference start full computations, not shortened examples.
+The default bank is contained in `inference_null_lasso.rds`; an explicit bank
+supplies its own configuration, datasets and streams. New output paths must
+not already exist.
 
 The ECDF shading is the pointwise across-dataset plus/minus one standard-error
 range, `sqrt(F_hat(x) * (1 - F_hat(x)) / N)`, truncated to `[0, 1]`. It is not a
 simultaneous confidence band or a within-chain Monte Carlo standard error.
 
 The supplied object contains the paper results but not the large production
-chains, so chain diagnostics cannot be recomputed from it. Assigned formal
+target/auxiliary chains. The root `inference_trajectories.rds` supplies complete
+ordered Q statistics and the reused directional statistics under shared physical
+trajectory keys. `Rscript ../../../reproduce.R` recomputes their actual tail
+indicator diagnostics offline using posterior 1.7.0 and R 4.4.3. The same Proposed
+production trajectory supplies two different tests at delta zero, not two runs.
+Each indicator separately uses `ess_basic(..., split=TRUE)` and `mcse_mean` on
+an iterations-by-one-chain matrix. Missing ESS and MCSE remain missing and are
+excluded separately from their own medians; no p-value is omitted. Assigned formal
 random streams are retained for a new run; fresh-bank or PMMH reruns are not
 claimed to reproduce the supplied paper values bitwise, because agreement also
 depends on the recorded R, glmnet, and numerical environment.

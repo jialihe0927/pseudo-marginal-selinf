@@ -1,11 +1,4 @@
-segments_cp <- function(n, changepoints) {
-  boundaries <- c(0L, sort(as.integer(changepoints)), as.integer(n))
-  data.frame(
-    start = head(boundaries, -1L) + 1L,
-    end = tail(boundaries, -1L)
-  )
-}
-
+# Configuration.
 validate_efficiency_config_cp <- function(config) {
   chunk_sizes <- config$rejection_chunk_sizes
   valid_chunks <- is.numeric(chunk_sizes) &&
@@ -59,25 +52,12 @@ validate_efficiency_config_cp <- function(config) {
   invisible(config)
 }
 
-bulk_ess_cp <- function(x, method, coordinate) {
-  label <- paste0(method, ", ", coordinate)
-  if (any(!is.finite(x))) {
-    message("Bulk ESS is NA for ", label, ": production draws contain non-finite values.")
-    return(NA_real_)
-  }
-  if (length(unique(x)) < 2L) {
-    message("Bulk ESS is NA for ", label, ": production draws form a constant chain.")
-    return(NA_real_)
-  }
-
-  tryCatch(
-    as.numeric(posterior::ess_bulk(matrix(x, ncol = 1L))),
-    error = function(error) {
-      stop(
-        "Bulk ESS failed for ", label, ": ", conditionMessage(error),
-        call. = FALSE
-      )
-    }
+# Bounded segmentation and the final-set event.
+segments_cp <- function(n, changepoints) {
+  boundaries <- c(0L, sort(as.integer(changepoints)), as.integer(n))
+  data.frame(
+    start = head(boundaries, -1L) + 1L,
+    end = tail(boundaries, -1L)
   )
 }
 
@@ -169,11 +149,6 @@ select_changepoints_cp <- function(
   )
 }
 
-reconstruct_series_cp <- function(target, benchmark) {
-  target_coefficients <- benchmark$Sigma_T_inv %*% as.numeric(target)
-  as.numeric(benchmark$R_obs + benchmark$V %*% target_coefficients)
-}
-
 selection_event_cp <- function(target, auxiliary, benchmark) {
   series <- reconstruct_series_cp(target, benchmark) +
     benchmark$tau * as.numeric(auxiliary)
@@ -188,6 +163,12 @@ selection_event_cp <- function(target, auxiliary, benchmark) {
   identical(selected_set, benchmark$selected_changepoints)
 }
 
+# Frozen selective Gaussian benchmark.
+reconstruct_series_cp <- function(target, benchmark) {
+  target_coefficients <- benchmark$Sigma_T_inv %*% as.numeric(target)
+  as.numeric(benchmark$R_obs + benchmark$V %*% target_coefficients)
+}
+
 log_gaussian_cp <- function(target, benchmark) {
   delta <- as.numeric(target) - benchmark$gaussian_center
   -0.5 * (
@@ -197,3 +178,10 @@ log_gaussian_cp <- function(target, benchmark) {
   )
 }
 
+# Mean ESS on each retained coordinate.
+mean_ess_cp <- function(x, method, coordinate) {
+  label <- paste(method, coordinate, sep = ", ")
+  estimate <- mean_diagnostics(x, label)
+  if (nzchar(estimate$undefined_reason)) message(label, ": ", estimate$undefined_reason)
+  estimate$ess_mean
+}

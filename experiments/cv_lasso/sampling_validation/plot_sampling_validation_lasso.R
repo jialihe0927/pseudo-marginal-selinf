@@ -1,8 +1,12 @@
-options(stringsAsFactors = FALSE)
-
-script_argument <- grep("^--file=", commandArgs(FALSE), value = TRUE)
-if (!length(script_argument)) stop("Run this entry point with Rscript.")
-script_directory <- dirname(sub("^--file=", "", script_argument[[1L]]))
+script_file <- if (sys.nframe() > 0L) {
+  files <- vapply(sys.frames(), function(frame) {
+    if (is.null(frame$ofile)) "" else as.character(frame$ofile)
+  }, character(1L))
+  tail(files[nzchar(files)], 1L)
+} else {
+  sub("^--file=", "", grep("^--file=", commandArgs(FALSE), value = TRUE)[1L])
+}
+script_directory <- dirname(script_file)
 source(file.path(script_directory, "functions_validation_lasso.R"), local = TRUE)
 if (!requireNamespace("ggplot2", quietly = TRUE)) stop("Package 'ggplot2' is required.")
 if (!capabilities("cairo")) stop("Cairo PDF support is required for the paper figure.")
@@ -103,16 +107,21 @@ make_coordinate_figure_lasso <- function(object) {
     )
 }
 
-arguments <- commandArgs(trailingOnly = TRUE)
-if (length(arguments) > 1L) stop("Usage: Rscript plot_sampling_validation_lasso.R [input.rds]")
-input_path <- if (length(arguments)) arguments[[1L]] else {
-  file.path(script_directory, "sampling_validation_lasso.rds")
+main <- function(arguments = commandArgs(trailingOnly = TRUE)) {
+  if (length(arguments) > 1L) stop("Usage: Rscript plot_sampling_validation_lasso.R [input.rds]")
+  input_path <- if (length(arguments)) arguments[[1L]] else {
+    file.path(script_directory, "sampling_validation_lasso.rds")
+  }
+  if (!file.exists(input_path)) stop("Validation input not found: ", input_path)
+  object <- readRDS(input_path)
+  figure <- make_coordinate_figure_lasso(object)
+  ggsave(
+    paste0(tools::file_path_sans_ext(input_path), ".pdf"), figure,
+    width = 12, height = 8, units = "in",
+    device = grDevices::cairo_pdf, bg = "white", limitsize = FALSE
+  )
 }
-if (!file.exists(input_path)) stop("Validation input not found: ", input_path)
-object <- readRDS(input_path)
-figure <- make_coordinate_figure_lasso(object)
-ggsave(
-  paste0(tools::file_path_sans_ext(input_path), ".pdf"), figure,
-  width = 12, height = 8, units = "in",
-  device = grDevices::cairo_pdf, bg = "white", limitsize = FALSE
-)
+
+if (sys.nframe() == 0L) {
+  main()
+}

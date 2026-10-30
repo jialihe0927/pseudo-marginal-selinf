@@ -1,115 +1,123 @@
-# Changepoint directional power
+# Changepoint directional inference
 
-Full-selector, Full-path and matched Data Fission are compared at delta=0.4,
-0.6, 0.8, 1.0. Each signal has 200 paired eligible datasets. The supplied results
-combine two complementary sets of 100 from the same frozen bank: IDs 1--100 and
-101--200. Public preparation and inference use one bank and one task loop;
-source_batch and the actual task seeds retain their identities.
+Compare Proposed (`full_selector`) and matched Data splitting (`data_fission`)
+at delta = 0, 0.4, 0.6, 0.8, 1, using 200 paired eligible datasets per signal.
 
-## Model, events, and directional target
+## Model and target
 
-Y=delta*b+epsilon, epsilon~N(0,I_200), where b is one on indices 101:140 and zero
-elsewhere. Independent W~N(0,0.1^2 I) gives selection input Y+W. Bounded binary
-segmentation makes four sequential splits, with minimum segment length 10.
-Candidate ties use segment start, split location, then segment end. Adaptive K
-minimizes RSS_K+1.25*K*log(200) over K=0,...,4; ties within 1e-12 choose smallest K.
-Each delta retains the first 200 raw-order datasets with K_obs>=1. No dataset is
-filtered by p-value or chain behavior. dataset_id is local to delta; raw_id is the
-original attempt.
+`Y = delta*b + epsilon`, with `epsilon ~ N(0,I_200)` and `b = 1{101<=i<=140}`.
+Independent `W ~ N(0,0.1^2 I)` gives selection input `Y+W`. The selector builds
+four bounded segmentation splits, minimum segment length 10; candidates are
+ordered by absolute CUSUM, segment start, split, then segment end. It minimizes
+`RSS_K + 1.25*K*log(n)` over K = 0,...,4, choosing the smallest K within tie
+tolerance 1e-12. Proposed matches only the final unordered changepoint set.
+The complete four-step path remains necessary for choosing K.
 
-Full-selector matches the final unordered adaptive changepoint set. Full-path
-matches observed K, all four ordered split locations and all four signed-CUSUM
-signs, including splits after K_obs. It does not condition on the IC ranking or
-additional pairwise IC constraints. Both rerun the complete adaptive selector.
+Each signal retains the first 200 raw-order datasets with K_obs >= 1, without
+filtering on p-values or chain behavior. `dataset_id` is local to delta and
+`raw_id` records the attempt. New preparation has a 10,000-attempt limit per
+signal and reports delta, retained count and attempts if it cannot fill a bank.
+Old frozen configurations without `raw_attempt_limit` use that same default
+without rewriting their files. Recorded attempts are 881, 435, 253, 212 and 200.
 
-V contains adjacent segment-mean contrasts: negative reciprocal segment length
-on the left, positive reciprocal length on the right. T=V'Y, Sigma=V'V and
-R=Y-V*Sigma^(-1)T. Fix R and a=V'b, with g=a'Sigma^(-1)a. The statistic is
-S_dir(t)=a'Sigma^(-1)t/sqrt(g). Its observed direction is fixed throughout the
-chain and uses the known signal shape b, not an estimated unknown signal.
-The multivariate null reference is N(0,Sigma), with the relevant event and R
-fixed; the directional test is upper-tailed at projected null mean zero. Delta
-generates alternatives and is not inserted into the null reference mean.
-The recorded structural-zero convention is p=1 without sampling; no supplied
-dataset has a structural-zero direction.
+V contains successive right-minus-left segment-mean contrasts. Write `T=V'Y`,
+`Sigma=V'V`, `R=Y-V*Sigma^(-1)T`, `a=V'b` and `g=a'Sigma^(-1)a`.
+The upper-tail statistic is `a'Sigma^(-1)t/sqrt(g)`, with fixed direction and
+residual and null reference `N(0,Sigma)`. Delta generates alternatives; it does
+not shift this null center. Structural-zero directions return p=1 before either
+sampling branch, without fabricated tail counts or diagnostics. None occurs in
+the supplied bank.
 
-Fission selects on Y+W and infers from Y_fiss=Y-100W. The Gaussian views are
-independent, with covariances 1.01 I and 101 I. T_fiss=V'Y_fiss has covariance
-101 Sigma. The analytic p-value is the normal upper tail of
-a'Sigma^(-1)T_fiss/sqrt(101*g). The same observed changepoints and direction
-are used, without reselection, extra random draws or a fictitious chain.
+Data splitting selects on Y+W and infers from `Y_fiss=Y-100W`. These independent
+Gaussian views have covariances 1.01 I and 101 I. Its p-value is the normal upper
+tail of `a'Sigma^(-1)T_fiss/sqrt(101*g)` using the same selected set and direction,
+with no reselection or random draws. The factors 100 and 101 follow from SD 0.1.
 
-## PMMH and power
+## Dependencies, files and commands
 
-Correlated PMMH initializes at observed T and W/0.1, with 200 adaptive warm-up
-transitions, zero stabilization, 5000 production draws, one Bernoulli auxiliary
-estimate, rho=0.8, initial h=0.8, target acceptance 0.20 and bounds [0.05,5].
-Warm-up uses log(h) += 0.5/(i+10)^0.6*(MH acceptance probability - 0.20);
-production freezes h. Rejection retains both target and auxiliary. Cost is one
-selector call per transition (5200), with the observed initializer taken as given.
+- `functions_nonnull_cp.R`: configuration, selector/event, target/statistic,
+  bank generation, paired results and validation.
+- `samplers_nonnull_cp.R`: directional PMMH and zero-signal reuse.
+- `prepare_nonnull_cp.R`: bank preparation without PMMH.
+- `inference_nonnull_cp.R`: paired inference on a frozen or supplied bank.
+- `plot_inference_nonnull_cp.R`: PDF via the root `plot_style.R`.
+- `inference_nonnull_cp.rds` / `.pdf`: frozen results and figure.
 
-The frozen runner uses T'=T+(h/sqrt(K))*R_chol*xi with R_chol=chol(Sigma),
-without transposing the upper factor. Its actual proposal covariance is
-(h^2/K)*R_chol*R_chol', where R_chol'*R_chol=Sigma. This recorded implementation
-is preserved; its symmetric proposal still uses the Gaussian null target in MH.
-It should not be described as proposal covariance (h^2/K)*Sigma.
-
-P-values are inclusive upper-tail counts divided by 5000, without +1 correction;
-reject iff p<=0.05. Power is recomputed from the 200 paired rejection indicators.
-Error bars are power +/- sqrt(power*(1-power)/200), not single-batch SE or MCMC
-precision. Endpoints are not numerically clipped; the plot keeps its [0,1] scale.
-
-## Files and environment
-
-- functions_nonnull_cp.R: configuration, DGP, selector/events, eligibility,
-  target/direction, fission, RNG assignments, checks and summaries.
-- samplers_nonnull_cp.R: the formal correlated PMMH transitions.
-- prepare_nonnull_cp.R: constructs the complete eligible bank without PMMH.
-- inference_nonnull_cp.R: paired inference on a supplied or frozen bank.
-- plot_inference_nonnull_cp.R: reads RDS and uses ../../../plot_style.R.
-- inference_nonnull_cp.rds: frozen data/targets, generation/task seeds and states,
-  dataset results, power and saved finite-chain summaries.
-- inference_nonnull_cp.pdf: the paper figure.
-
-Sampling and preparation use base R and parallel. Plotting requires ggplot2,
-patchwork and Cairo. Original sampler software versions are unknown; the recorded
-results-analysis environment used R 4.4.3 and ggplot2 4.0.3. Current checks used
-R 4.4.3, ggplot2 4.0.3 and patchwork 1.3.0. No packages are installed automatically.
-
-## Reproduction
-
-Run from this directory. Redraw paper results:
+R 4.4.3 is the verified environment; inference diagnostics require posterior
+1.7.0. Preparation uses base R and parallel without a diagnostic version lock.
+Plotting requires ggplot2 4.0.3, patchwork 1.3.0 and Cairo. Positive-signal
+sampling and the offline diagnostics use R 4.4.3 and posterior 1.7.0;
+the original zero-signal sampling environment is not fully recorded.
+Packages are not installed automatically.
+From this directory:
 
 ```sh
 Rscript plot_inference_nonnull_cp.R
-```
-
-Rerun inference on the frozen bank:
-
-```sh
 Rscript inference_nonnull_cp.R rerun_inference_nonnull_cp.rds
 Rscript plot_inference_nonnull_cp.R rerun_inference_nonnull_cp.rds
-```
-
-Build a new bank, run inference, and plot:
-
-```sh
 Rscript prepare_nonnull_cp.R bank_nonnull_cp.rds
 Rscript inference_nonnull_cp.R new_inference_nonnull_cp.rds bank_nonnull_cp.rds
-Rscript plot_inference_nonnull_cp.R new_inference_nonnull_cp.rds
 ```
 
-New bank/result paths must not exist. An explicit bank supplies its own config,
-datasets and task streams. Generation uses the recorded per-delta master and
-raw-attempt seed formula; inference retains the two complementary seed ranges.
-Fission needs no additional random stream.
+Default inputs and dependencies are script-relative. Explicit relative paths use
+the caller's directory. Preparation/inference refuse existing outputs and start
+full computations. A supplied bank controls configuration, data and task streams.
+Source an entry point to expose its functions without executing the main program.
 
-The supplied p-values and decisions are the paper results. Small deterministic
-generation/target/event checks and complete saved-result/count checks were
-performed. Full bank reconstruction and PMMH reruns were not executed for release;
-bitwise recovery also depends on the R/numerical environment. Production chains
-are not bundled, so chain diagnostics cannot be recomputed from this RDS. Saved
-summaries include constant tail indicators, threshold overlap and prefix changes;
-they limit finite-chain precision claims. Integrity does not establish convergence.
-Full-run time is unknown.
+## Kernels, provenance and results
 
+PMMH uses 200 warm-up transitions, zero stabilization, 5,000 production draws,
+one auxiliary sample, rho=0.8, initial h=0.8 and bounds [0.05,5]. Warm-up adapts
+`log(h) += 0.5/(i+10)^0.6*(acceptance probability - 0.20)`; production freezes h.
+Rejection holds both states. At positive signals, the implementation is
+
+```r
+L <- t(chol(Sigma))
+T_proposed <- T + (h / sqrt(K)) * drop(L %*% xi)
+```
+
+Here `tcrossprod(L) = Sigma` and K is the observed target dimension, so the
+proposal covariance is `(h^2/K)*Sigma`. This symmetric random walk uses the
+Gaussian MH ratio and an unconditional uniform draw. Positive-signal chains use
+5,200 selector calls with their observed initializer taken as given.
+
+Delta zero instead reuses the quadratic-null runner with a directional score:
+it uses the lower factor `t(chol(Sigma))`, covariance `(h^2/K)*Sigma`, and draws
+a uniform only for positive acceptance probability. Its recorded 5,201 calls
+include initializer verification. Shared n, randomization SD, segment bounds,
+penalty, tie tolerance, test level and PMMH settings are explicitly passed to the
+null configuration. Supported bounds remain SD=0.1, minimum segment=10,
+maximum changepoints=4 and penalty=1.25; incompatible settings fail before work.
+The fixed positive-signal adaptation schedule cannot be changed through optional
+null-kernel fields.
+
+The 200 delta-zero datasets are the global-null bank (last raw ID 881), with
+original generation states and the Proposed streams at positions `2*id-1` in
+the quadratic-null assignment. The signal template remains nonzero. New dataset
+and task `source_batch=0` means global-null origin. In the supplied task table,
+delta-zero `source_batch=1/2` only groups IDs; its original streams are retained.
+Positive signals retain complementary bank batches 1/2 (IDs 1--100 / 101--200).
+Their Proposed task streams use master seed 20261030 and L'Ecuyer-CMRG with
+Inversion/Rejection, allocating successive `parallel::nextRNGStream()` states
+in sorted `(delta, dataset_id)` order. The saved `rng_state` is the task's actual
+initial state; `seed` identifies its stream master, not an independent task seed.
+Bank generation seeds are unchanged. Preparation and inference use these same
+identity-based assignments, independent of worker scheduling.
+
+P-values are inclusive tail counts / 5,000 with no +1 correction; reject at
+p <= 0.05. Power error bars are +/- sqrt(power*(1-power)/200), untruncated
+numerically, on a [0,1] plot. Delta-zero rejection rates are 0.025 for Proposed
+and 0.040 for Data splitting. No Data-splitting chain or MCSE is invented.
+At positive signals, Proposed rejects 26, 64, 115 and 153 of 200 datasets;
+Data splitting rejects 8, 20, 19 and 27, respectively.
+
+The root `inference_trajectories.rds` provides ordered production statistics,
+including shared keys for quadratic-null and delta-zero tests, rather than full
+target/auxiliary chains. `Rscript ../../../reproduce.R` computes each actual
+upper-tail indicator's mean ESS/MCSE using posterior 1.7.0. Constant, too-short or
+unestimable series retain NA with objective reasons; nonfinite input errors.
+Finite ESS and MCSE are pooled independently without dropping p-values. A split
+trajectory is not independent multi-chain initialization. Saved prefix and
+finite-tail summaries describe precision limitations, not convergence evidence.
+Full bank reconstruction and chain reruns have not been runtime-tested, and
+bitwise recovery also depends on the R/numerical environment.

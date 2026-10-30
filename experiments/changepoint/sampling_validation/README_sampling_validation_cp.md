@@ -27,11 +27,12 @@ Rscript sampling_validation_cp.R recomputed_cp.rds
 Rscript plot_sampling_validation_cp.R recomputed_cp.rds
 ```
 
+Sourcing either entry exposes its functions without analysis or writes.
 The analysis accepts an optional second positional input RDS and refuses existing
 output files. Plotting an alternate RDS writes a PDF with its basename, leaving
 the supplied paper figure untouched.
 
-To actively regenerate samples using the released selector and kernels in
+To actively regenerate samples using the selector and kernels in
 `../efficiency_comparison/functions_cp.R` and `samplers_cp.R`:
 
 ```sh
@@ -81,11 +82,11 @@ chain in one column, then `posterior::ess_basic(draws, split = TRUE)` and
 statistic, not rank-normalized bulk ESS. Valid results satisfy
 `mcse_mean = sd(x) / sqrt(ess_mean)`; `tau = length(x) / ess_mean` is also saved.
 There is no handwritten ESS estimator, extra ESS cap, or batch-means fallback.
-The separate descriptive ACF retains its existing autocovariance calculation;
-it does not supply ESS. Efficiency's frozen bulk ESS is not modified or used
-to convert mean MCSE.
+The separate descriptive ACF uses N-k autocovariance normalization;
+it does not supply ESS. Efficiency uses the same mean ESS, minimized across
+raw coordinates, and not rank-normalized bulk ESS.
 
-Each tail indicator is analyzed as its own 0/1 trajectory by these same public
+Each tail indicator is analyzed as its own 0/1 trajectory by the shared `diagnostics.R`
 interfaces. Successes, failures and state transitions are reported without
 inventing an adequacy threshold. All eight MCMC tail indicators are estimable,
 but one has only 18 state transitions; finite ESS is not a precision guarantee.
@@ -110,28 +111,24 @@ autocorrelations, rolling means and mixing summaries are retained. The existing
 covariance comparison uses 500 descriptive bootstrap replicates: IID reference
 resampling and circular blocks of length 200 for chains (seed 20261022).
 Whitening uses the Gaussian target covariance, not a claim that this equals the
-selective covariance. No new diagnostic or interval was introduced.
+selective covariance. Analysis always recomputes this bootstrap from the current samples and
+configuration, restoring the caller's RNG kind and state. Saved bootstrap fields
+are not treated as validated caches. Pure plotting never computes bootstrap.
 
-The reference has 78 draws and each kernel contributes one production trajectory.
 Minimum coordinate mean ESS is 238.955843 (PM) and 309.020906 (CPM). At the
 S_shift 0.75 threshold, reference exceedances are 78/78, with a Wilson interval
-of approximately [0.953, 1]. One MCMC indicator has only 18 state transitions.
+of approximately [0.953, 1].
 Coordinate ECDFs compare marginals descriptively; they do not prove joint
 agreement or uniformly accurate tail inference.
 
-## Environment and verification
+## Environment
 
 Historical R/package versions are unknown. Offline recalculation used R 4.4.3,
 posterior 1.7.0; plotting was checked with ggplot2 4.0.3. Offline diagnostics need
 posterior; plotting needs ggplot2 and Cairo PDF support. Explicit generation also
 requires the sibling Efficiency code. Historical run time is unknown.
 
-Offline checks cover syntax, function-only loading, exact-vector holding-run
-examples, equality of retained diagnostics, and sample/target/metadata invariance.
-The posterior wrappers were also checked against direct calls and the ESS/MCSE
-identity, including degenerate and nonfinite inputs. Existing covariance bootstrap
-estimates and intervals were retained without recomputation. Descriptive ACF,
-rolling outputs, coordinate ECDFs and the paper PDF remain unchanged. No MCMC,
-rejection sampling, selector evaluation or smoke simulation was run. Efficiency
-results and accounting were not changed.
+Maximum coordinate mean MCSE is 0.01197 (PM) and 0.01153 (CPM), independently
+of the coordinate attaining the minimum mean ESS. Offline diagnostics and
+plotting use saved samples only. Complete regeneration has not been runtime-tested.
 

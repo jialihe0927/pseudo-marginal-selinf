@@ -11,8 +11,8 @@ are included in `config$benchmark` and `config$target`.
 
 ## Files and use
 
-- `functions_validation_lasso.R`: sample checks, statistics, numerical diagnostics
-  and explicit regeneration using the sibling Efficiency samplers.
+- `functions_validation_lasso.R`: sample checks, statistics, diagnostics through
+  the root `diagnostics.R`, and explicit generation using the Efficiency samplers.
 - `sampling_validation_lasso.R`: offline analysis entry; sampling is opt-in only.
 - `plot_sampling_validation_lasso.R`: full-sample coordinate ECDFs, two rows by
   three columns; writes only PDF and does not recompute diagnostics.
@@ -31,6 +31,14 @@ Rscript plot_sampling_validation_lasso.R recomputed_lasso.rds
 The analysis accepts an optional second positional input RDS. It refuses to
 overwrite any existing output. Plotting an alternate RDS writes the same basename
 with `.pdf`, leaving the supplied paper figure untouched.
+
+For direct offline function use from this directory, load the shared diagnostics
+before the experiment functions:
+
+```r
+source("../../../diagnostics.R")
+source("functions_validation_lasso.R")
+```
 
 To actively generate new samples, using the released selector and kernels in
 `../efficiency_comparison/functions_lasso.R` and `samplers_lasso.R`:
@@ -80,16 +88,17 @@ in rows and the single chain in one column, then
 `posterior::ess_basic(draws, split = TRUE)` and `posterior::mcse_mean(draws)`.
 `ess_mean` is the raw-statistic mean ESS; valid results satisfy
 `mcse_mean = sd(x) / sqrt(ess_mean)` and `tau = length(x) / ess_mean`.
-Coordinate `ess_bulk` is retained separately for the Efficiency comparison and
-never used in this mean-MCSE conversion. No additional ESS cap or alternative
-estimator fallback is applied; package numerical protections and warnings remain
+Efficiency uses the same mean ESS, minimized across raw coordinates.
+No additional ESS cap or alternative estimator fallback is applied; package
+numerical protections and warnings remain
 visible and are recorded in `package_warnings`.
 
 Upper-tail (`>=`) diagnostics apply these same public functions to each specified
 indicator's own 0/1 trajectory, not to the original continuous variable. Successes,
 failures and state transitions accompany indicator ESS/MCSE. Constant, too-short
 or otherwise unestimable sequences have NA ESS/MCSE and an `undefined_reason`,
-never a fabricated zero MCSE. Nonfinite input is an error identifying the method
+never a fabricated zero MCSE. If only ESS or MCSE is undefined, the other valid
+estimate is retained. Nonfinite input is an error identifying the method
 and statistic. All eight saved MCMC tail indicators have finite ESS/MCSE.
 
 The independent reference mean SE is SD/sqrt(129). Conditional on the fixed
@@ -109,19 +118,16 @@ trajectory does not provide independently initialized chains or multi-chain
 convergence evidence. Coordinate ECDFs are descriptive marginal comparisons,
 not proof of joint agreement or accurate tail inference.
 
-## Environment and verification
+## Environment
 
 Recorded original numerical-analysis environment: R 4.4.3, posterior 1.7.0.
 Original sampling R/glmnet versions are unknown. Offline recalculation used
-R 4.4.3, posterior
-1.7.0, ggplot2 4.0.3 and glmnet 4.1-9. Offline analysis needs posterior; plotting
-needs ggplot2 and Cairo PDF support; explicit regeneration also needs glmnet and
+R 4.4.3, posterior 1.7.0, ggplot2 4.0.3 and glmnet 4.1-9.
+Offline analysis requires posterior 1.7.0; R versions other than the verified
+4.4.3 produce a warning. Plotting needs ggplot2 and Cairo PDF support; explicit regeneration also needs glmnet and
 the sibling Efficiency code. Historical run time is unknown.
 
-Offline checks cover syntax, function-only loading, exact-vector holding-run
-examples, equality of retained diagnostics, and sample/target/metadata invariance.
-The posterior wrappers were also checked against direct calls and the ESS/MCSE
-identity, including degenerate and nonfinite inputs. The paper PDF and coordinate
-ECDFs remain unchanged. No MCMC, rejection sampling, selector evaluation or smoke
-simulation was run. Frozen Efficiency results and their accounting were not changed.
+Maximum coordinate mean MCSE is 0.00548 (PM) and 0.00352 (CPM), taken
+independently of the coordinate attaining minimum ESS. Offline diagnostics and
+plotting use saved samples only. Complete regeneration has not been runtime-tested.
 

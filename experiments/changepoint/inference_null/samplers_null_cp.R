@@ -3,7 +3,8 @@ adaptation_rate_null_cp <- function(iteration, config) {
     (iteration + config$pmmh$adaptation_offset)^config$pmmh$adaptation_power
 }
 
-run_pmmh_null_cp <- function(dataset, method_id, rng_state, config) {
+run_pmmh_null_cp <- function(dataset, method_id, rng_state, config,
+                              statistic_function = NULL, statistic_observed = NULL) {
   if (!method_id %in% c("full_selector", "fixed_k")) {
     stop("Unknown changepoint PMMH method: ", method_id)
   }
@@ -44,6 +45,8 @@ run_pmmh_null_cp <- function(dataset, method_id, rng_state, config) {
   proposal_factor <- t(chol(target$Sigma_T))
   proposal_scale <- pmmh$proposal_scale_initial
   tail_count <- 0L
+  production_statistics <- numeric(pmmh$production)
+  if (is.null(statistic_observed)) statistic_observed <- target$Q_obs
   warmup_accepted <- 0L
   production_accepted <- 0L
 
@@ -97,19 +100,22 @@ run_pmmh_null_cp <- function(dataset, method_id, rng_state, config) {
       )
     } else {
       production_accepted <- production_accepted + as.integer(accepted)
-      statistic <- target_statistic_null_cp(target_value, target)
-      tail_count <- tail_count + as.integer(statistic >= target$Q_obs)
+      statistic <- if (is.null(statistic_function)) {
+        target_statistic_null_cp(target_value, target)
+      } else statistic_function(target_value)
+      production_statistics[iteration - pmmh$warmup] <- statistic
+      tail_count <- tail_count + as.integer(statistic >= statistic_observed)
     }
   }
 
   p_value <- tail_count / pmmh$production
-  data.frame(
+  row <- data.frame(
     dataset_id = dataset$dataset_id,
     raw_id = dataset$raw_id,
     target_id = "selected_changepoints",
     method_id = method_id,
     target_dimension = dimension,
-    statistic_observed = target$Q_obs,
+    statistic_observed = statistic_observed,
     tail_count = tail_count,
     production_draws = pmmh$production,
     p_value = p_value,
@@ -122,4 +128,10 @@ run_pmmh_null_cp <- function(dataset, method_id, rng_state, config) {
     selector_evaluations = 1L + pmmh$total_transitions,
     stringsAsFactors = FALSE
   )
+  attr(row, "production_statistics") <- production_statistics
+  attr(row, "indicator_diagnostics") <- mean_diagnostics(
+    as.numeric(production_statistics >= statistic_observed),
+    paste(method_id, dataset$dataset_id, "quadratic or directional tail")
+  )
+  row
 }

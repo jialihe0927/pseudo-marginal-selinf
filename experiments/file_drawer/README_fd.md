@@ -1,75 +1,102 @@
 # Gaussian file-drawer experiment
 
-This directory contains the self-contained R implementation and paper results
-for the Gaussian file-drawer experiment. It compares rejection sampling,
-Independent Pseudo-Marginal (PM), and Correlated Pseudo-Marginal (CPM) sampling
-by the number of observations needed to reach a fixed accuracy target.
+This experiment compares rejection, Independent Pseudo-Marginal (PM), and
+Correlated Pseudo-Marginal (CPM) sampling by the per-chain observation count
+needed to reach a fixed accuracy target. The figure abbreviates Independent PM
+as PM.
 
 ## Files
 
-- `samplers_fd.R`: selection event, exact selected-state initialization, and the
+- `samplers_fd.R`: selection event, exact selected-state initialization, and
   Independent PM and CPM transitions.
-- `analysis_fd.R`: selected-distribution calculations, fixed-accuracy estimation,
-  and the analytic rejection calculation.
-- `run_fd.R`: the complete simulation entry point and final experiment settings.
-- `plot_fd.R`: reads one RDS result object and creates the two-panel paper figure.
-- `results_fd.rds`: supplied paper estimates and the configuration needed
-  to interpret them.
-- `figure1_fd.pdf`: the paper figure.
+- `analysis_fd.R`: selected-distribution calculations, stable crossing, and
+  the analytic rejection calculation.
+- `run_fd.R`: experiment settings, simulation, and result saving.
+- `plot_fd.R`: the two-panel paper figure, without simulation.
+- `results_fd.rds`: 35 paper estimates and their experiment configuration.
+- `sampling_complexity_fd.pdf`: the paper figure.
 
-Run all commands below from this directory.
+## Dependencies
 
-## Environment
+Numerical calculations use base R; plotting requires `ggplot2` and Cairo
+support (`capabilities("cairo")`). Checked with R 4.4.3 and ggplot2 4.0.3.
+Packages are not installed automatically. Sourcing the R files does not start
+an experiment, read results, or write files.
 
-The code requires R and `ggplot2`; all numerical work uses base R. The release
-was checked with R 4.4.3 and ggplot2 4.0.3. Packages are not installed
-automatically.
+## Plot the supplied results
 
-## Reproduce the figure
+Run these commands from this directory:
 
 ```sh
 Rscript plot_fd.R
+Rscript plot_fd.R rerun_fd.rds
 ```
 
-This reads `results_fd.rds` and writes `figure1_fd.pdf`. A different result file
-can be plotted with, for example, `Rscript plot_fd.R rerun_fd.rds`; its figure
-is written beside it as `rerun_fd.pdf`.
+The first command reads `results_fd.rds` and writes
+`sampling_complexity_fd.pdf`. The second writes `rerun_fd.pdf` beside its input.
+Only PDF is produced. When invoked by script path from another directory,
+default inputs and dependencies are located beside the script; explicitly
+supplied relative input and output paths remain relative to the caller.
 
-## Rerun the experiment
+## Run the complete experiment
 
 ```sh
 Rscript run_fd.R rerun_fd.rds
 ```
 
-The default output is `rerun_fd.rds`. The command stops rather than
-overwriting an existing file. A full run is computationally expensive; its
-original wall-clock time is unknown.
+This starts the full simulation. The default output is `rerun_fd.rds`; an
+existing output is never overwritten. The original wall-clock time is unknown.
 
-The supplied RDS contains the paper results. The historical random streams are
-not available in this compact release, so `run_fd.R` uses a documented,
-deterministic seed scheme and a rerun will have ordinary Monte Carlo variation;
-bitwise reproduction is not expected.
+The supplied RDS contains the paper results. Historical random streams were
+not retained; new simulations use L'Ecuyer-CMRG with seed
+`9100000 + configuration_id` and do not promise bitwise reproduction.
 
-## Experiment and metric
+## Settings and metrics
 
-The displayed grid is `b = 2, ..., 8`. The fixed regime uses `a = 0.9`; the
-adaptive regime uses `a_b = 1 - b^-2`. The proposal scale is
-`2 / (b * sqrt(a))`. Independent PM uses `rho = 0`, while fixed-regime CPM uses
-`rho = 1 - b^-2`. The paper figure includes rejection, Independent PM, and CPM
-in the fixed regime, and rejection plus Independent PM in the adaptive regime.
-Adaptive-regime CPM is implemented but is not part of the default run.
+The grid is `b = 2, ..., 8`. The fixed regime uses `a = 0.9` and compares
+Rejection, Independent PM, and CPM (21 displayed records). The adaptive regime
+uses `a_b = 1 - b^-2` and compares Rejection and Independent PM (14 records).
+The proposal scale is `2 / (b * sqrt(a))`. Independent PM uses `rho = 0`;
+fixed-regime CPM uses `rho = 1 - b^-2`.
 
-Each of 1,000 chains starts exactly from the selected distribution, with no
-warm-up. The initial state is observation 1, so a run with `n` observations has
-`n - 1` transitions. Each transition is charged one selector evaluation. The
-observable is the indicator that `X` is below the exact selected-distribution
-median. At checkpoints spaced approximately 5% apart, accuracy is measured as
-four times the across-chain variance of the chain averages. The reported
-fixed-accuracy time is the first of eight consecutive checkpoints at or below
-0.10. An unresolved crossing remains `NA`; it is never replaced by the run cap.
+Each simulated configuration uses 1,000 chains initialized exactly from the
+selected distribution, with no warm-up. The observable is
+`I(X <= selected-distribution median)`. At checkpoints spaced approximately
+5% apart, the variance ratio is four times the across-chain variance of the
+chain averages. With `epsilon = 0.10`, the raw stable-crossing estimate is the
+start of the earliest eight consecutive checkpoints whose variance ratios
+are all at most epsilon. A missing crossing remains `NA`, not the run cap.
 
-The plotted point estimate is the raw stable-crossing start. Rejection values
-are analytic rather than simulated. All plotted logarithms are natural
-logarithms. The dashed and dotted reference curves are formula-based growth
-guides with fixed vertical display offsets; those offsets are not theoretical
-constants or fitted simulation estimates.
+The result fields distinguish accuracy from simulation cost:
+
+- `complexity_n`: per-chain observation count at the stable-crossing start,
+  including the initial state; not the final stopping point.
+- `observations_simulated`: per-chain observations actually retained through
+  confirmation and the configured extra checkpoints.
+- `transitions_per_chain`: `observations_simulated - 1`.
+- `selector_evaluations`: `n_chains * (observations_simulated - 1)`, the total
+  proposal event evaluations across chains under the experiment's billing
+  convention. Initialization validation and checkpoint state-integrity
+  checks are excluded; this is not every call to `selection_event()`.
+
+The run configuration retains distinct observation caps and extra-checkpoint
+counts. Fixed-regime Independent PM has no extra checkpoints after the
+eight-checkpoint confirmation; fixed CPM and adaptive Independent PM have
+eight extra checkpoints, subject to their caps. Neither this total cost nor
+the confirmation endpoint replaces the plotted per-chain `complexity_n`.
+
+New runs also save `checkpoint_summary`, with `regime`, `b`, `method`,
+`observations`, and `variance_ratio`. These small summaries allow the crossing
+start to be recomputed without storing chains. The frozen paper RDS lacks
+these checkpoint variance sequences, so it alone cannot independently
+recompute the historical simulated crossings.
+
+Rejection values are computed from an analytic formula, not simulation.
+The calculation retains stable small-probability expressions. At `b = 8`,
+the crossing exceeds the range in which double precision represents every
+integer; the numerical search does not resolve it one integer at a time.
+
+All plotted logarithms are natural logarithms. Reference curves use the
+theoretical growth forms. Their vertical positions are chosen using empirical
+anchors and fixed display offsets; they are not estimates of theoretical
+constants or fitted growth rates.

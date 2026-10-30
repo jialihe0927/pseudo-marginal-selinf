@@ -50,36 +50,54 @@ target and auxiliary states.
 
 ## Environment
 
-The recorded formal environment used R 4.4.3, digest 0.6.37, and jsonlite
-1.9.1. Release validation used R 4.4.3 and ggplot2 4.0.3. The sampler itself
-uses base R and `parallel`; ggplot2 is needed for the figure. Packages are not
-installed automatically.
+R 4.4.3 is the verified environment; indicator diagnostics require posterior
+1.7.0 and warn on other R versions. Bank preparation uses base R and parallel
+without a diagnostic version lock. Plotting uses ggplot2 4.0.3 and Cairo.
+Packages are not installed automatically.
 
 ## Run
 
-Run from this directory.
+Commands below run from this directory. Default inputs and dependencies are
+script-relative; explicit relative paths use the caller's directory. Sourcing
+an entry point does not execute its main program. Redraw without sampling:
 
 ```sh
 Rscript plot_inference_null_cp.R
+```
+
+Run complete inference on the frozen bank, then plot the new results:
+
+```sh
 Rscript inference_null_cp.R rerun_inference_null_cp.rds
 Rscript plot_inference_null_cp.R rerun_inference_null_cp.rds
+```
+
+Generate a complete bank from raw attempts, run inference, and plot:
+
+```sh
 Rscript prepare_null_cp.R bank_null_cp.rds
 Rscript inference_null_cp.R new_inference_null_cp.rds bank_null_cp.rds
 Rscript plot_inference_null_cp.R new_inference_null_cp.rds
 ```
 
-The first command redraws the supplied paper result. The second reruns inference
-on the frozen data bank contained in `inference_null_cp.rds`. The final three
-commands instead build a fresh bank from the recorded raw-attempt streams, run
-inference on that bank, and plot its result. New output paths must not already
-exist.
+Preparation and inference start full computations, not shortened examples.
+The default bank is contained in `inference_null_cp.rds`; an explicit bank
+supplies its own configuration, datasets and streams. New output paths must
+not already exist.
 
 The ECDF shading is the pointwise across-dataset plus/minus one standard-error
 range, `sqrt(F_hat(x) * (1 - F_hat(x)) / N)`, truncated to `[0, 1]`. It is not a
 simultaneous confidence band or a within-chain Monte Carlo standard error.
 
 The supplied object contains the paper results but not the large production
-chains, so chain diagnostics cannot be recomputed from it. Assigned formal
+target/auxiliary chains. The root `inference_trajectories.rds` supplies complete
+ordered Q statistics and the reused directional statistics under shared physical
+trajectory keys. `Rscript ../../../reproduce.R` recomputes their actual tail
+indicator diagnostics offline using posterior 1.7.0 and R 4.4.3. The same Proposed
+production trajectory supplies two different tests at delta zero, not two runs.
+Each indicator separately uses `ess_basic(..., split=TRUE)` and `mcse_mean` on
+an iterations-by-one-chain matrix. Missing ESS and MCSE remain missing and are
+excluded separately from their own medians; no p-value is omitted. Assigned formal
 random streams are retained for a new run; fresh-bank or PMMH reruns are not
 claimed to reproduce the supplied paper values bitwise, because agreement also
 depends on the recorded R and numerical environment.

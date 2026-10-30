@@ -1,11 +1,19 @@
 #!/usr/bin/env Rscript
 
-options(stringsAsFactors = FALSE)
-
-suppressPackageStartupMessages({
-  library(ggplot2)
-  library(grid)
-})
+script_file <- if (sys.nframe() > 0L) {
+  files <- vapply(sys.frames(), function(frame) {
+    if (is.null(frame$ofile)) "" else as.character(frame$ofile)
+  }, character(1L))
+  tail(files[nzchar(files)], 1L)
+} else {
+  sub("^--file=", "", grep("^--file=", commandArgs(FALSE), value = TRUE)[1L])
+}
+# Windows can leave UTF-8 command-line paths unmarked under the C locale.
+if (.Platform$OS.type == "windows" &&
+    isTRUE(l10n_info()[["system.codepage"]] == 65001L)) {
+  Encoding(script_file) <- "UTF-8"
+}
+script_directory <- dirname(script_file)
 
 make_reference_guides <- function(estimates) {
   b_values <- sort(unique(estimates$b))
@@ -32,7 +40,8 @@ make_reference_guides <- function(estimates) {
     )
   }
 
-  # These additive offsets only position the asymptotic guides visually.
+  # Empirical anchors and fixed offsets position the theoretical growth forms;
+  # their vertical positions are not theoretical constants or fitted rates.
   rbind(
     make_guide("fixed_a", "Rejection reference", b_values^2 / 2 + 4.2),
     make_guide("adaptive_a", "Rejection reference", b_values^2 / 2 + 4.2),
@@ -55,6 +64,11 @@ make_reference_guides <- function(estimates) {
 }
 
 make_figure <- function(result) {
+  suppressPackageStartupMessages({
+    library(ggplot2)
+    library(grid)
+  })
+
   required <- c("regime", "b", "method", "complexity_n", "resolved")
   if (!is.list(result) || !is.data.frame(result$estimates)) {
     stop("The RDS file must contain a list with an estimates data frame.")
@@ -103,6 +117,10 @@ make_figure <- function(result) {
   linewidths <- setNames(c(1.3, 1.3, 1.3, 0.75, 0.75, 0.75), legend_order)
   panel_levels <- c("fixed_a", "adaptive_a")
 
+  # Preserve the paper's marker overplotting order where curves meet at small b.
+  estimates <- estimates[order(match(estimates$regime, c("fixed_a", "adaptive_a")),
+                               match(estimates$method, c("Rejection", "Independent PM", "CPM")),
+                               estimates$b), ]
   empirical <- transform(
     estimates,
     panel = factor(regime, levels = panel_levels),
@@ -139,7 +157,7 @@ make_figure <- function(result) {
   fixed_legend <- make_legend(
     "fixed_a",
     legend_order,
-    c("'Rejection'", "'Indep.'~PM", "'CPM'", "slope~0.5", "slope~0.05", "log(b^2)")
+    c("'Rejection'", "'PM'", "'CPM'", "slope~0.5", "slope~0.05", "log(b^2)")
   )
   adaptive_keys <- c(
     "Rejection", "Independent PM", "Rejection reference",
@@ -148,7 +166,7 @@ make_figure <- function(result) {
   adaptive_legend <- make_legend(
     "adaptive_a",
     adaptive_keys,
-    c("'Rejection'", "'Indep.'~PM", "slope~0.5", "slope~0")
+    c("'Rejection'", "'PM'", "slope~0.5", "slope~0")
   )
   custom_legend <- rbind(fixed_legend, adaptive_legend)
   legend_boxes <- data.frame(
@@ -177,7 +195,7 @@ make_figure <- function(result) {
       data = empirical,
       aes(
         x = b_squared, y = log_value,
-        group = interaction(panel, method),
+        group = interaction(panel, factor(method, levels = c("Rejection", "Independent PM", "CPM"))),
         color = color, linetype = linetype, linewidth = linewidth
       )
     ) +
@@ -259,22 +277,42 @@ make_figure <- function(result) {
     )
 }
 
-args <- commandArgs(trailingOnly = TRUE)
-if (length(args) > 1L) stop("Usage: Rscript plot_fd.R [results.rds]")
-input_path <- if (length(args)) args[[1L]] else "results_fd.rds"
-if (!file.exists(input_path)) stop("Results file not found: ", input_path)
+main <- function(args = commandArgs(trailingOnly = TRUE)) {
+  # R file connections need a UTF-8 locale for non-ASCII Windows paths.
+  if (.Platform$OS.type == "windows" && Sys.getlocale("LC_CTYPE") == "C" &&
+      isTRUE(l10n_info()[["system.codepage"]] == 65001L)) {
+    previous_locale <- Sys.getlocale("LC_CTYPE")
+    Sys.setlocale("LC_CTYPE", ".UTF-8")
+    on.exit(Sys.setlocale("LC_CTYPE", previous_locale), add = TRUE)
+  }
 
-output_stem <- if (identical(input_path, "results_fd.rds")) {
-  "figure1_fd"
-} else {
-  tools::file_path_sans_ext(input_path)
+  if (length(args) > 1L) stop("Usage: Rscript plot_fd.R [results.rds]")
+  input_path <- if (length(args)) {
+    args[[1L]]
+  } else {
+    file.path(script_directory, "results_fd.rds")
+  }
+  if (!file.exists(input_path)) stop("Results file not found: ", input_path)
+  if (!capabilities("cairo")) stop("PDF plotting requires R with Cairo support.")
+
+  output_stem <- if (!length(args)) {
+    file.path(script_directory, "sampling_complexity_fd")
+  } else if (identical(input_path, "results_fd.rds")) {
+    "sampling_complexity_fd"
+  } else {
+    tools::file_path_sans_ext(input_path)
+  }
+  figure <- make_figure(readRDS(input_path))
+  ggplot2::ggsave(
+    paste0(output_stem, ".pdf"),
+    figure,
+    width = 12,
+    height = 5,
+    units = "in",
+    device = grDevices::cairo_pdf
+  )
 }
-figure <- make_figure(readRDS(input_path))
-ggsave(
-  paste0(output_stem, ".pdf"),
-  figure,
-  width = 12,
-  height = 5,
-  units = "in",
-  device = cairo_pdf
-)
+
+if (sys.nframe() == 0L) {
+  main()
+}

@@ -1,13 +1,15 @@
+# Configuration and the shared zero-signal settings.
 default_config_nonnull_cp <- function() {
   list(
-    application = "changepoint", delta_grid = c(0.4, 0.6, 0.8, 1),
-    datasets_per_delta = 200L, n = 200L, randomization_sd = 0.1,
+    application = "changepoint", delta_grid = c(0, 0.4, 0.6, 0.8, 1),
+    datasets_per_delta = 200L, raw_attempt_limit = 10000L,
+    n = 200L, randomization_sd = 0.1,
     signal_direction = replace(numeric(200L), 101:140, 1),
     minimum_segment = 10L, maximum_changepoints = 4L,
     penalty_coefficient = 1.25, tie_tolerance = 1e-12,
     test_level = 0.05,
-    methods = c("full_selector", "full_path", "data_fission"),
-    sampled_methods = c("full_selector", "full_path"),
+    methods = c("full_selector", "data_fission"),
+    sampled_methods = "full_selector",
     pmmh = list(
       warmup = 200L, stabilization = 0L, production = 5000L,
       total_transitions = 5200L, auxiliary_samples = 1L, rho = 0.8,
@@ -18,30 +20,126 @@ default_config_nonnull_cp <- function() {
       kind = c("L'Ecuyer-CMRG", "Inversion", "Rejection"),
       generation_masters = c(80421041L, 80422041L, 80423041L, 80424041L),
       generation_stride = 1009L,
-      inference_bases = c(126000000L, 226000000L),
-      complementary_bank_boundary = 100L, inference_stride = 7919L
+      null_generation_master = 20261013L,
+      null_proposed_master = 20261014L,
+      positive_proposed_master = 20261030L,
+      complementary_bank_boundary = 100L
     )
   )
 }
 
-with_rng_nonnull_cp <- function(fun, seed = NULL, state = NULL) {
-  old_kind <- RNGkind()
-  had_seed <- exists(".Random.seed", envir = .GlobalEnv, inherits = FALSE)
-  if (had_seed) old_seed <- get(".Random.seed", envir = .GlobalEnv)
-  on.exit({
-    do.call(RNGkind, as.list(old_kind))
-    if (had_seed) {
-      assign(".Random.seed", old_seed, envir = .GlobalEnv)
-    } else if (exists(".Random.seed", envir = .GlobalEnv, inherits = FALSE)) {
-      rm(".Random.seed", envir = .GlobalEnv)
-    }
-  }, add = TRUE)
-  RNGkind("L'Ecuyer-CMRG", "Inversion", "Rejection")
-  if (is.null(state)) set.seed(as.integer(seed))
-  else assign(".Random.seed", as.integer(state), envir = .GlobalEnv)
-  fun()
+raw_attempt_limit_nonnull_cp <- function(config) {
+  # Older frozen configurations predate this run-control field.
+  limit <- if (is.null(config$raw_attempt_limit)) 10000L else config$raw_attempt_limit
+  if (!is.numeric(limit) || length(limit) != 1L || !is.finite(limit) ||
+      limit > .Machine$integer.max || limit != floor(limit) ||
+      limit < config$datasets_per_delta) {
+    stop("raw_attempt_limit must be an integer >= datasets_per_delta.")
+  }
+  as.integer(limit)
 }
 
+validate_config_nonnull_cp <- function(config) {
+  reference <- default_config_nonnull_cp()
+  if (!identical(config$application, "changepoint") ||
+      !identical(config$methods, reference$methods) ||
+      !identical(config$sampled_methods, reference$sampled_methods)) {
+    stop("The application or method definitions are incompatible.")
+  }
+  scientific <- c("datasets_per_delta", "n", "randomization_sd", "minimum_segment",
+                  "maximum_changepoints", "penalty_coefficient", "tie_tolerance", "test_level")
+  if (!all(scientific %in% names(config)) ||
+      !all(vapply(config[scientific], function(x) {
+        is.numeric(x) && length(x) == 1L && is.finite(x)
+      }, logical(1L)))) stop("Scientific settings must be complete finite numeric scalars.")
+  n <- config$datasets_per_delta
+  if (length(n) != 1L || !is.finite(n) || n < 1L || n != as.integer(n)) {
+    stop("datasets_per_delta must be a positive integer.")
+  }
+  if (!identical(config$delta_grid, reference$delta_grid)) stop("The signal grid is incompatible.")
+  if (!identical(config$rng$kind, reference$rng$kind) ||
+      !is.numeric(config$rng$positive_proposed_master) ||
+      length(config$rng$positive_proposed_master) != 1L ||
+      !is.finite(config$rng$positive_proposed_master) ||
+      config$rng$positive_proposed_master < 1 ||
+      config$rng$positive_proposed_master > .Machine$integer.max ||
+      config$rng$positive_proposed_master != floor(config$rng$positive_proposed_master)) {
+    stop("Positive-signal tasks require a positive integer master seed and L'Ecuyer-CMRG/Inversion/Rejection RNG.")
+  }
+  if (config$n > .Machine$integer.max || config$n != floor(config$n) || config$n < 50L ||
+      length(config$signal_direction) != config$n || any(!is.finite(config$signal_direction))) {
+    stop("n must be an integer >= 50 and signal_direction must be finite with length n.")
+  }
+  if (config$tie_tolerance < 0) stop("tie_tolerance must be finite and nonnegative.")
+  if (config$test_level <= 0 || config$test_level >= 1) stop("test_level must lie in (0, 1).")
+  raw_attempt_limit_nonnull_cp(config)
+  pmmh <- config$pmmh
+  required_pmmh <- c("warmup", "stabilization", "production", "total_transitions",
+                     "auxiliary_samples", "rho", "scale_initial", "scale_min",
+                     "scale_max", "target_acceptance")
+  if (!all(required_pmmh %in% names(pmmh)) ||
+      any(!vapply(pmmh[required_pmmh], function(x) {
+        is.numeric(x) && length(x) == 1L && is.finite(x)
+      }, logical(1L)))) stop("PMMH parameters must be complete finite numeric scalars.")
+  # The positive-signal kernel uses this fixed warm-up adaptation schedule.
+  fixed <- list(adaptation_rate = 0.5, adaptation_offset = 10,
+                adaptation_power = 0.6, production_adaptation = FALSE)
+  for (field in names(fixed)) {
+    if (!is.null(pmmh[[field]]) && !isTRUE(all.equal(pmmh[[field]], fixed[[field]]))) {
+      stop("Unsupported PMMH setting: ", field, " must equal ", fixed[[field]], ".")
+    }
+  }
+  lengths <- unlist(pmmh[c("warmup", "stabilization", "production", "total_transitions")])
+  if (any(!is.finite(lengths)) || any(lengths != as.integer(lengths)) ||
+      pmmh$warmup <= 0L || pmmh$production <= 0L || pmmh$stabilization != 0L ||
+      pmmh$warmup + pmmh$production != pmmh$total_transitions ||
+      pmmh$auxiliary_samples != 1L) {
+    stop("Invalid PMMH lengths; stabilization must be zero and auxiliary_samples one.")
+  }
+  if (!is.finite(pmmh$rho) || pmmh$rho < 0 || pmmh$rho >= 1 ||
+      pmmh$scale_min <= 0 || pmmh$scale_min > pmmh$scale_initial ||
+      pmmh$scale_initial > pmmh$scale_max || pmmh$target_acceptance <= 0 ||
+      pmmh$target_acceptance >= 1) {
+    stop("Invalid auxiliary correlation, proposal scales, or adaptation target.")
+  }
+  supported <- c(randomization_sd = 0.1, minimum_segment = 10L,
+                 maximum_changepoints = 4L, penalty_coefficient = 1.25)
+  for (field in names(supported)) {
+    if (config[[field]] != supported[[field]]) {
+      stop("This implementation supports ", field, " = ", supported[[field]],
+           " only; received ", config[[field]], ".")
+    }
+  }
+  invisible(config)
+}
+
+null_config_nonnull_cp <- function(config) {
+  validate_config_nonnull_cp(config)
+  null <- default_config_null_cp()
+  # Shared scientific settings; labels and dataset-count field names differ.
+  shared <- c("n", "randomization_sd", "minimum_segment", "maximum_changepoints",
+              "penalty_coefficient", "tie_tolerance", "test_level")
+  for (field in shared) null[[field]] <- config[[field]]
+  null$dataset_count <- config$datasets_per_delta
+  null$raw_attempt_limit <- raw_attempt_limit_nonnull_cp(config)
+  null$rng$raw_master_seed <- config$rng$null_generation_master
+  null$rng$formal_master_seed <- config$rng$null_proposed_master
+  # Explicit correspondence preserves the quadratic-null kernel and its RNG order.
+  fields <- c(warmup = "warmup", stabilization = "stabilization",
+              production = "production", total_transitions = "total_transitions",
+              auxiliary_samples = "auxiliary_samples", rho = "rho",
+              proposal_scale_initial = "scale_initial", proposal_scale_min = "scale_min",
+              proposal_scale_max = "scale_max", target_acceptance = "target_acceptance")
+  for (field in names(fields)) null$pmmh[[field]] <- config$pmmh[[fields[[field]]]]
+  null$pmmh$adaptation_rate <- 0.5
+  null$pmmh$adaptation_offset <- 10
+  null$pmmh$adaptation_power <- 0.6
+  null$pmmh$production_adaptation <- FALSE
+  validate_config_null_cp(null)
+  null
+}
+
+# The four-step path selects K; the event fixes only the final unordered set.
 segments_nonnull_cp <- function(n, changepoints) {
   boundaries <- c(0L, sort(as.integer(changepoints)), as.integer(n))
   data.frame(start = head(boundaries, -1L) + 1L, end = tail(boundaries, -1L))
@@ -106,6 +204,15 @@ select_nonnull_cp <- function(series, config) {
        observed_path = path, observed_signs = path_signs, criterion = criterion)
 }
 
+selection_event_nonnull_cp <- function(T, U, dataset, method_id, config) {
+  if (!method_id %in% config$sampled_methods) stop("Unknown changepoint sampling method: ", method_id)
+  target <- dataset$target
+  Y <- drop(target$R_obs + target$V %*% (target$Sigma_T_inv %*% as.numeric(T)))
+  selected <- select_nonnull_cp(Y + config$randomization_sd * U, config)
+  identical(selected$selected_changepoints, dataset$selected_changepoints)
+}
+
+# Conditional Gaussian target and fixed directional statistic.
 build_target_nonnull_cp <- function(dataset, config) {
   segments <- segments_nonnull_cp(config$n, dataset$selected_changepoints)
   if (any(segments$end - segments$start + 1L < config$minimum_segment)) {
@@ -152,22 +259,58 @@ statistic_nonnull_cp <- function(T, direction) {
   drop(as.matrix(T) %*% direction$coefficient) / sqrt(direction$information)
 }
 
-selection_event_nonnull_cp <- function(T, U, dataset, method_id, config) {
-  if (!method_id %in% config$sampled_methods) stop("Unknown changepoint sampling method: ", method_id)
-  target <- dataset$target
-  Y <- drop(target$R_obs + target$V %*% (target$Sigma_T_inv %*% as.numeric(T)))
-  selected <- select_nonnull_cp(Y + config$randomization_sd * U, config)
-  if (method_id == "full_selector") {
-    return(identical(selected$selected_changepoints, dataset$selected_changepoints))
-  }
-  # All four ordered split locations and signs are fixed, including those after K_obs.
-  selected$selected_k == dataset$selected_k &&
-    identical(selected$observed_path, dataset$observed_path) &&
-    identical(selected$observed_signs, dataset$observed_signs)
+fission_statistic_nonnull_cp <- function(dataset, config) {
+  if (dataset$direction$structural_zero) return(NA_real_)
+  # Selection uses Y+W; inference uses Y-tau^(-2)W, independent under Gaussian noise.
+  Y_fission <- dataset$Y - 100 * dataset$W
+  T_fission <- drop(crossprod(dataset$target$V, Y_fission))
+  direction <- dataset$direction
+  drop(crossprod(direction$a, solve(dataset$target$Sigma_T, T_fission)) /
+         sqrt(direction$information))
+}
+
+fission_pvalue_nonnull_cp <- function(
+    dataset, config, score = fission_statistic_nonnull_cp(dataset, config)) {
+  if (dataset$direction$structural_zero) return(1)
+  stats::pnorm(score / sqrt(101), lower.tail = FALSE)
+}
+
+# Raw-order eligibility and paired task streams.
+with_rng_nonnull_cp <- function(fun, seed = NULL, state = NULL) {
+  old_kind <- RNGkind()
+  had_seed <- exists(".Random.seed", envir = .GlobalEnv, inherits = FALSE)
+  if (had_seed) old_seed <- get(".Random.seed", envir = .GlobalEnv)
+  on.exit({
+    do.call(RNGkind, as.list(old_kind))
+    if (had_seed) {
+      assign(".Random.seed", old_seed, envir = .GlobalEnv)
+    } else if (exists(".Random.seed", envir = .GlobalEnv, inherits = FALSE)) {
+      rm(".Random.seed", envir = .GlobalEnv)
+    }
+  }, add = TRUE)
+  RNGkind("L'Ecuyer-CMRG", "Inversion", "Rejection")
+  if (is.null(state)) set.seed(as.integer(seed))
+  else assign(".Random.seed", as.integer(state), envir = .GlobalEnv)
+  fun()
+}
+
+convert_null_nonnull_cp <- function(dataset, config) {
+  converted <- list(
+    delta = 0, dataset_id = dataset$dataset_id, raw_id = dataset$raw_id,
+    Y = dataset$response, W = dataset$randomization, selected_k = dataset$selected_k,
+    selected_changepoints = dataset$selected_changepoints,
+    observed_path = dataset$ordered_path, observed_signs = integer(),
+    criterion = dataset$criterion, generation_rng_state = dataset$generation_rng_state,
+    generation_rng = dataset$generation_rng,
+    source_batch = 0L
+  )
+  converted$target <- build_target_nonnull_cp(converted, config)
+  converted$direction <- build_direction_nonnull_cp(converted, config)
+  converted
 }
 
 generate_attempt_nonnull_cp <- function(delta, raw_id, config) {
-  group <- match(delta, config$delta_grid)
+  group <- match(delta, config$delta_grid[config$delta_grid > 0])
   seed <- as.integer((config$rng$generation_masters[group] +
                         raw_id * config$rng$generation_stride) %% 2147483627L)
   values <- with_rng_nonnull_cp(function() {
@@ -187,33 +330,61 @@ generate_attempt_nonnull_cp <- function(delta, raw_id, config) {
 
 assign_rng_nonnull_cp <- function(datasets, config) {
   rows <- list()
+  null_streams <- rng_streams_null_cp(config$rng$null_proposed_master, 2L * config$datasets_per_delta)
+  # Allocate positive-signal streams by scientific identity, independent of
+  # worker scheduling or the order of datasets supplied to this function.
+  positive_jobs <- expand.grid(
+    dataset_id = seq_len(config$datasets_per_delta),
+    delta = sort(config$delta_grid[config$delta_grid > 0])
+  )
+  positive_keys <- paste(positive_jobs$delta, positive_jobs$dataset_id, sep = ":")
+  positive_streams <- with_rng_nonnull_cp(function() {
+    streams <- vector("list", nrow(positive_jobs))
+    streams[[1L]] <- as.integer(get(".Random.seed", envir = .GlobalEnv))
+    if (length(streams) > 1L) {
+      for (index in seq.int(2L, length(streams))) {
+        streams[[index]] <- parallel::nextRNGStream(streams[[index - 1L]])
+      }
+    }
+    streams
+  }, seed = config$rng$positive_proposed_master)
   for (dataset in datasets) for (method_id in config$sampled_methods) {
-    group <- match(dataset$delta, config$delta_grid)
-    method <- match(method_id, config$sampled_methods)
-    source_batch <- 1L + as.integer(dataset$dataset_id > config$rng$complementary_bank_boundary)
-    seed <- as.integer(config$rng$inference_bases[source_batch] + group * 10000000L +
-                         method * 1000000L + dataset$dataset_id * config$rng$inference_stride)
+    rng_batch <- 1L + as.integer(dataset$dataset_id > config$rng$complementary_bank_boundary)
+    seed <- if (dataset$delta == 0) config$rng$null_proposed_master else config$rng$positive_proposed_master
     row <- data.frame(
       delta = dataset$delta, dataset_id = dataset$dataset_id, raw_id = dataset$raw_id,
-      method_id = method_id, source_batch = source_batch, seed = seed,
+      method_id = method_id,
+      source_batch = if (dataset$delta == 0) 0L else rng_batch, seed = seed,
       stringsAsFactors = FALSE
     )
-    row$rng_state <- I(list(with_rng_nonnull_cp(function() {
-      as.integer(get(".Random.seed", envir = .GlobalEnv))
-    }, seed = seed)))
+    state <- if (dataset$delta == 0) {
+      null_streams[[2L * dataset$dataset_id - 1L]]
+    } else {
+      index <- match(paste(dataset$delta, dataset$dataset_id, sep = ":"), positive_keys)
+      if (is.na(index)) stop("Unknown positive-signal task identity.")
+      positive_streams[[index]]
+    }
+    row$rng_state <- I(list(state))
     rows[[length(rows) + 1L]] <- row
   }
   do.call(rbind, rows)
 }
 
 prepare_bank_nonnull_cp <- function(config = default_config_nonnull_cp()) {
-  validate_config_nonnull_cp(config)
+  null_config <- null_config_nonnull_cp(config)
+  attempt_limit <- raw_attempt_limit_nonnull_cp(config)
   datasets <- list()
   raw_attempts <- integer(length(config$delta_grid))
   for (delta_index in seq_along(config$delta_grid)) {
+    if (config$delta_grid[delta_index] == 0) {
+      null_bank <- prepare_bank_null_cp(null_config)
+      datasets <- c(datasets, lapply(null_bank$datasets, convert_null_nonnull_cp, config = config))
+      raw_attempts[delta_index] <- null_bank$raw_attempts
+      next
+    }
     retained <- 0L
     raw_id <- 0L
-    while (retained < config$datasets_per_delta) {
+    while (retained < config$datasets_per_delta && raw_id < attempt_limit) {
       raw_id <- raw_id + 1L
       dataset <- generate_attempt_nonnull_cp(config$delta_grid[delta_index], raw_id, config)
       if (is.null(dataset)) next
@@ -221,6 +392,11 @@ prepare_bank_nonnull_cp <- function(config = default_config_nonnull_cp()) {
       dataset$dataset_id <- retained
       dataset$source_batch <- 1L + as.integer(retained > config$rng$complementary_bank_boundary)
       datasets[[length(datasets) + 1L]] <- dataset
+    }
+    if (retained < config$datasets_per_delta) {
+      stop("Raw-attempt limit reached for delta=", config$delta_grid[delta_index],
+           ": retained ", retained, "/", config$datasets_per_delta,
+           " eligible datasets after ", raw_id, " attempts.")
     }
     raw_attempts[delta_index] <- raw_id
   }
@@ -230,55 +406,45 @@ prepare_bank_nonnull_cp <- function(config = default_config_nonnull_cp()) {
   bank
 }
 
-fission_statistic_nonnull_cp <- function(dataset, config) {
-  if (dataset$direction$structural_zero) return(NA_real_)
-  # Selection uses Y+W; inference uses Y-tau^(-2)W, independent under Gaussian noise.
-  Y_fission <- dataset$Y - 100 * dataset$W
-  T_fission <- drop(crossprod(dataset$target$V, Y_fission))
-  direction <- dataset$direction
-  drop(crossprod(direction$a, solve(dataset$target$Sigma_T, T_fission)) /
-         sqrt(direction$information))
+# Paired results and frozen-input checks.
+result_row_nonnull_cp <- function(dataset, method_id, p_value, config,
+                                         tail_count = NA_integer_,
+                                         production_draws = NA_integer_,
+                                         result_type = "analytic",
+                                         selector_evaluations = 0L,
+                                         statistic_observed = NULL) {
+  if (is.null(statistic_observed)) {
+    statistic_observed <- if (method_id == "data_fission") {
+      fission_statistic_nonnull_cp(dataset, config)
+    } else dataset$direction$observed
+  }
+  data.frame(
+    delta = dataset$delta, dataset_id = dataset$dataset_id, raw_id = dataset$raw_id,
+    method_id = method_id, target_id = "selected_changepoint_direction",
+    target_dimension = dataset$selected_k,
+    statistic_observed = statistic_observed,
+    p_value = p_value, reject = as.integer(p_value <= config$test_level),
+    tail_count = tail_count, production_draws = production_draws,
+    result_type = result_type, status = "complete",
+    selector_evaluations = selector_evaluations, stringsAsFactors = FALSE
+  )
 }
 
-fission_pvalue_nonnull_cp <- function(dataset, config) {
-  if (dataset$direction$structural_zero) return(1)
-  score <- fission_statistic_nonnull_cp(dataset, config)
-  stats::pnorm(score / sqrt(101), lower.tail = FALSE)
-}
-validate_config_nonnull_cp <- function(config) {
-  reference <- default_config_nonnull_cp()
-  if (!identical(config$application, "changepoint") ||
-      !identical(config$methods, reference$methods) ||
-      !identical(config$sampled_methods, reference$sampled_methods)) {
-    stop("The application or method definitions are incompatible.")
+summarize_nonnull_cp <- function(data, config) {
+  rows <- list()
+  for (delta in config$delta_grid) for (method_id in config$methods) {
+    selected <- data[data$delta == delta & data$method_id == method_id, , drop = FALSE]
+    n <- nrow(selected)
+    rejections <- sum(selected$reject)
+    power <- rejections / n
+    se <- sqrt(power * (1 - power) / n)
+    rows[[length(rows) + 1L]] <- data.frame(
+      delta = delta, method_id = method_id, n = n, rejections = rejections,
+      power = power, se = se, lower = power - se, upper = power + se,
+      stringsAsFactors = FALSE
+    )
   }
-  n <- config$datasets_per_delta
-  if (length(n) != 1L || !is.finite(n) || n < 1L || n != as.integer(n)) {
-    stop("datasets_per_delta must be a positive integer.")
-  }
-  if (!identical(config$delta_grid, reference$delta_grid) ||
-      length(config$signal_direction) != config$n) {
-    stop("The signal grid or direction is incompatible.")
-  }
-  pmmh <- config$pmmh
-  lengths <- unlist(pmmh[c("warmup", "stabilization", "production", "total_transitions")])
-  if (any(!is.finite(lengths)) || any(lengths != as.integer(lengths)) ||
-      pmmh$warmup <= 0L || pmmh$production <= 0L || pmmh$stabilization != 0L ||
-      pmmh$warmup + pmmh$production != pmmh$total_transitions ||
-      pmmh$auxiliary_samples != 1L) {
-    stop("Invalid PMMH lengths; stabilization must be zero and auxiliary_samples one.")
-  }
-  if (!is.finite(pmmh$rho) || pmmh$rho < 0 || pmmh$rho >= 1 ||
-      pmmh$scale_min <= 0 || pmmh$scale_min > pmmh$scale_initial ||
-      pmmh$scale_initial > pmmh$scale_max || pmmh$target_acceptance <= 0 ||
-      pmmh$target_acceptance >= 1) {
-    stop("Invalid auxiliary correlation, proposal scales, or adaptation target.")
-  }
-  if (config$randomization_sd != 0.1 || config$minimum_segment != 10L ||
-      config$maximum_changepoints != 4L || config$penalty_coefficient != 1.25) {
-    stop("This implementation supports the recorded bounded selector and fission scaling only.")
-  }
-  invisible(config)
+  list(power = do.call(rbind, rows))
 }
 
 validate_bank_nonnull_cp <- function(bank) {
@@ -320,12 +486,12 @@ validate_bank_nonnull_cp <- function(bank) {
     }
   }
   for (dataset in datasets) {
-    if (length(dataset$selected_changepoints) != dataset$selected_k ||
-        length(dataset$observed_path) != config$maximum_changepoints ||
-        length(dataset$observed_signs) != config$maximum_changepoints ||
-        !identical(sort(dataset$observed_path[seq_len(dataset$selected_k)]),
-                   dataset$selected_changepoints)) {
-      stop("The observed path does not reconstruct the selected changepoints.")
+    if (length(dataset$selected_changepoints) != dataset$selected_k) {
+      stop("The selected set has the wrong dimension.")
+    }
+    if (length(dataset$observed_path) &&
+        !identical(sort(dataset$observed_path[seq_len(dataset$selected_k)]), dataset$selected_changepoints)) {
+      stop("The saved path does not reconstruct the selected changepoints.")
     }
     covariance <- dataset$target$Sigma_T
     required_target <- c("V", "T_obs", "R_obs", "Sigma_T", "Sigma_T_inv")
@@ -353,23 +519,6 @@ validate_bank_nonnull_cp <- function(bank) {
     stop("Random-stream assignments must cover every paired sampling task exactly once.")
   }
   invisible(bank)
-}
-
-summarize_nonnull_cp <- function(data, config) {
-  rows <- list()
-  for (delta in config$delta_grid) for (method_id in config$methods) {
-    selected <- data[data$delta == delta & data$method_id == method_id, , drop = FALSE]
-    n <- nrow(selected)
-    rejections <- sum(selected$reject)
-    power <- rejections / n
-    se <- sqrt(power * (1 - power) / n)
-    rows[[length(rows) + 1L]] <- data.frame(
-      delta = delta, method_id = method_id, n = n, rejections = rejections,
-      power = power, se = se, lower = power - se, upper = power + se,
-      stringsAsFactors = FALSE
-    )
-  }
-  list(power = do.call(rbind, rows))
 }
 
 validate_result_nonnull_cp <- function(result) {
@@ -436,25 +585,4 @@ validate_result_nonnull_cp <- function(result) {
     stop("The power summary does not match the paired dataset-level decisions.")
   }
   invisible(result)
-}
-
-result_row_nonnull_cp <- function(dataset, method_id, p_value, config,
-                                         tail_count = NA_integer_,
-                                         production_draws = NA_integer_,
-                                         result_type = "analytic",
-                                         selector_evaluations = 0L) {
-  data.frame(
-    delta = dataset$delta, dataset_id = dataset$dataset_id, raw_id = dataset$raw_id,
-    method_id = method_id, target_id = "selected_changepoint_direction",
-    target_dimension = dataset$selected_k,
-    statistic_observed = if (method_id == "data_fission") {
-      fission_statistic_nonnull_cp(dataset, config)
-    } else {
-      dataset$direction$observed
-    },
-    p_value = p_value, reject = as.integer(p_value <= config$test_level),
-    tail_count = tail_count, production_draws = production_draws,
-    result_type = result_type, status = "complete",
-    selector_evaluations = selector_evaluations, stringsAsFactors = FALSE
-  )
 }

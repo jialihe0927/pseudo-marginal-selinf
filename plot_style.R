@@ -1,10 +1,15 @@
-# Shared geometry and typography for the two directional-power figures.
+# Shared geometry and typography for the inference panels.
+inference_tick_labels <- function(x) {
+  # Plot labels must not inherit full-precision numerical export options.
+  formatC(x, format = "f", digits = 1, decimal.mark = ".")
+}
+
 plot_style <- list(
-  base_size = 13, axis_title_size = 15.5, axis_text_size = 12.5,
+  base_size = 13, axis_title_size = 10, axis_text_size = 8.5,
   legend_text_size = 11.5, bar_border_linewidth = 0.55, errorbar_linewidth = 0.85
 )
 
-theme_paper_inference <- function() {
+theme_inference_panel <- function() {
   theme_classic(base_size = plot_style$base_size, base_family = "sans") +
     theme(
       axis.title = element_text(size = plot_style$axis_title_size, color = "#222222"),
@@ -22,14 +27,23 @@ theme_paper_inference <- function() {
       legend.spacing.x = grid::unit(8, "pt"),
       legend.margin = margin(0, 0, 1, 0, unit = "pt"),
       panel.grid = element_blank(),
-      plot.title = element_blank(),
-      plot.margin = margin(2, 8, 4, 8, unit = "pt")
+      panel.grid.major = element_line(color = "grey88", linewidth = 0.35),
+      panel.grid.minor = element_blank(),
+      panel.ontop = FALSE,
+      panel.background = element_rect(fill = "white", color = NA),
+      plot.background = element_rect(fill = "white", color = NA),
+      plot.title = element_text(
+        size = 10, face = "plain", hjust = 0.5, vjust = 0.5, color = "#222222",
+        margin = margin(b = 5, unit = "pt")
+      ),
+      plot.margin = margin(5, 7, 6, 7, unit = "pt")
     )
 }
 
 
 bar_geometry <- function(data, method_ids) {
-  offsets <- setNames(seq(-0.25, 0.25, length.out = length(method_ids)), method_ids)
+  span <- if (length(method_ids) == 2L) 0.13 else 0.25
+  offsets <- setNames(seq(-span, span, length.out = length(method_ids)), method_ids)
   data$group_x <- match(data$delta, sort(unique(data$delta)))
   data$x <- data$group_x + offsets[data$method_id]
   data$xmin <- data$x - 0.105
@@ -95,6 +109,7 @@ legend_hatches <- function(method_id, xmin, xmax, ymin, ymax) {
 
 make_power_figure <- function(power, legend_labels) {
   method_ids <- c("model_only", "full_conditioning", "data_fission")
+  method_ids <- method_ids[method_ids %in% power$method_id]
   delta_grid <- sort(unique(power$delta))
   fills <- c(
     model_only = "#4878A8",
@@ -106,6 +121,7 @@ make_power_figure <- function(power, legend_labels) {
   edge <- "#4A4A4A"
 
   main <- ggplot() +
+    geom_hline(yintercept = 0.05, color = "#222222", linetype = "dashed", linewidth = 0.65) +
     geom_rect(
       data = bars,
       aes(xmin = xmin, xmax = xmax, ymin = 0, ymax = power, fill = method_id),
@@ -123,33 +139,26 @@ make_power_figure <- function(power, legend_labels) {
     ) +
     scale_fill_manual(values = fills, guide = "none") +
     scale_x_continuous(
-      breaks = seq_along(delta_grid), labels = format(delta_grid, nsmall = 1),
+      breaks = seq_along(delta_grid), labels = inference_tick_labels(delta_grid),
       expand = expansion(add = c(0.45, 0.45))
     ) +
     scale_y_continuous(
-      breaks = seq(0, 1, 0.2), limits = c(0, 1),
+      breaks = seq(0, 1, 0.2), labels = inference_tick_labels, limits = c(0, 1),
       expand = expansion(mult = 0)
     ) +
-    labs(x = expression(paste("Signal strength ", delta)), y = "Empirical power") +
-    theme_paper_inference() +
-    theme(
-      axis.title = element_text(size = 13.5, color = "#222222"),
-      axis.text = element_text(size = 11.5, color = "#222222"),
-      panel.background = element_rect(fill = "white", color = NA),
-      plot.background = element_rect(fill = "white", color = NA),
-      panel.grid.major = element_line(color = "grey88", linewidth = 0.35),
-      panel.grid.minor = element_blank(),
-      panel.ontop = FALSE,
-      legend.position = "none",
-      plot.margin = margin(10, 12, 10, 12, unit = "pt")
-    )
+    labs(x = expression(paste("Signal strength ", delta)), y = "Empirical rejection rate",
+         title = "(b) Null rejection and power") +
+    theme_inference_panel() +
+    theme(legend.position = "none")
 
-  legend_y <- c(0.77, 0.50, 0.23)
+  two_methods <- length(method_ids) == 2L
+  legend_y <- if (two_methods) c(0.7025, 0.2975) else c(0.77, 0.50, 0.23)
+  half_height <- if (two_methods) 0.105 else 0.070
   legend_frame <- data.frame(xmin = 0, xmax = 1, ymin = 0, ymax = 1)
   legend_boxes <- data.frame(
     method_id = method_ids,
     xmin = 0.10, xmax = 0.29,
-    ymin = legend_y - 0.070, ymax = legend_y + 0.070
+    ymin = legend_y - half_height, ymax = legend_y + half_height
   )
   legend_text <- data.frame(x = 0.37, y = legend_y, label = legend_labels)
   legend_hatch_list <- lapply(seq_len(nrow(legend_boxes)), function(i) {
@@ -179,7 +188,7 @@ make_power_figure <- function(power, legend_labels) {
     geom_text(
       data = legend_text,
       aes(x = x, y = y, label = label), hjust = 0, vjust = 0.5,
-      family = "sans", color = "#222222", size = 12 / ggplot2::.pt
+      family = "sans", color = "#222222", size = 8.5 / ggplot2::.pt
     ) +
     scale_fill_manual(values = fills, guide = "none") +
     scale_x_continuous(limits = c(0, 1), expand = expansion(mult = 0)) +
@@ -194,10 +203,24 @@ make_power_figure <- function(power, legend_labels) {
 
   if (!requireNamespace("patchwork", quietly = TRUE)) stop("patchwork package is required")
   p <- main + patchwork::inset_element(
-    legend_plot, left = 0.035, bottom = 0.685, right = 0.405, top = 0.950,
+    legend_plot, left = 0.035, bottom = if (two_methods) 0.785 else 0.700,
+    right = 0.400, top = 0.955,
     align_to = "panel", clip = FALSE
   )
 
 
   p
+}
+
+theme_null_legend <- function() {
+  theme(
+    legend.position = c(0.970, 0.060), legend.justification = c(1, 0),
+    legend.direction = "vertical",
+    legend.background = element_rect(fill = "white", color = "black", linewidth = 0.45),
+    legend.key = element_rect(fill = "white", color = NA),
+    legend.key.width = grid::unit(20, "pt"), legend.key.height = grid::unit(15, "pt"),
+    legend.spacing.y = grid::unit(0, "pt"),
+    legend.margin = margin(3, 4, 3, 4, unit = "pt"),
+    legend.text = element_text(size = 8.5, color = "#222222")
+  )
 }
