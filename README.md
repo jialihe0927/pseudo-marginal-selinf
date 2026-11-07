@@ -1,129 +1,197 @@
-# PMMH for selective inference: experiment code
+# pseudo-marginal-selinf
 
-R implementations and frozen results for pseudo-marginal selective inference:
+Code for reproducing the experiments in *Pseudo-marginal Sampling for Selective Inference*.
 
-- [Gaussian file drawer](experiments/file_drawer/README_fd.md): fixed-accuracy
-  sampling complexity.
-- [CV-Lasso](experiments/cv_lasso/README_lasso.md): sampling efficiency,
-  quadratic-null inference, directional inference, and sampling validation.
-- [Changepoint](experiments/changepoint/README_cp.md): the same four applications
-  of the selective-inference workflow.
+## Installation
 
-## Dependencies
-
-The verified diagnostic environment is R 4.4.3 with `posterior` 1.7.0.
-Diagnostic calculations require that posterior version; other R versions
-produce a warning rather than an unconditional version error. Mean diagnostics
-are defined in `diagnostics.R`.
-
-Inference figures use `ggplot2` 4.0.3, `patchwork` 1.3.0, and R with Cairo PDF
-support. Pure plotting and frozen efficiency tables do not require posterior.
-CV-Lasso data preparation and sampling additionally require `glmnet`; see each
-experiment README for its dependencies and historical version information.
-Nothing is installed automatically.
-
-## Get the code and LFS data
-
-Git and Git LFS are needed for these two files:
-
-- `experiments/cv_lasso/inference_null/inference_null_lasso.rds`
-- `experiments/cv_lasso/inference_nonnull/inference_nonnull_lasso.rds`
-
-Only these exact paths use LFS; the other RDS files use ordinary Git.
+Install R and the following packages:
 
 ```sh
-git clone https://github.com/jialihe927-maker/pmmh-selective-inference.git
-cd pmmh-selective-inference
+Rscript -e "install.packages(c('posterior', 'glmnet', 'ggplot2', 'patchwork'))"
+```
+
+`posterior` is used for diagnostics, `glmnet` for CV-Lasso preparation and
+sampling, and `ggplot2` and `patchwork` for figures. PDF output requires R with
+Cairo support. File Drawer calculations and Changepoint sampling use base R.
+Tested with R 4.4.3, posterior 1.7.0, glmnet 4.1-9, ggplot2 4.0.3 and
+patchwork 1.3.0; these versions are not enforced by the code.
+
+Install Git and Git LFS, then obtain the code and data:
+
+```sh
+git clone https://github.com/jialihe927-maker/pseudo-marginal-selinf.git
+cd pseudo-marginal-selinf
 git lfs install --local
 git lfs pull
 ```
 
-Keep the downloaded files at their existing paths. A small text file beginning
-with `version https://git-lfs.github.com/spec/v1` is only a pointer; run
-`git lfs pull` to obtain its RDS data. Do not assume Download ZIP includes the
-complete LFS files.
+The two large CV-Lasso RDS files, `calibration_lasso.rds` and `power_lasso.rds`,
+use Git LFS. Download their actual data and keep them at the supplied paths;
+GitHub's Download ZIP may omit the LFS data.
 
-## Offline reproduction
+## Repository structure
 
-The root scripts separate shared diagnostics (`diagnostics.R`), offline
-summaries (`reproduce.R`), panel composition (`plot_inference.R`), and shared
-figure geometry and typography (`plot_style.R`).
+| Path | Purpose |
+| --- | --- |
+| [reproduce.R](reproduce.R) | Unified entry for paper tables, diagnostics and figures |
+| [experiments/file_drawer/](experiments/file_drawer/) | File Drawer sampling complexity |
+| [experiments/cv_lasso/](experiments/cv_lasso/) | CV-Lasso experiments |
+| [experiments/changepoint/](experiments/changepoint/) | Changepoint experiments |
 
-Run from the repository root:
+Both applications contain four experiment directories:
 
-```sh
-Rscript reproduce.R
-Rscript reproduce.R ../recomputed-output
-Rscript plot_inference.R ../inference-figures
-```
+| Directory | Purpose | CV-Lasso | Changepoint |
+| --- | --- | --- | --- |
+| `efficiency_comparison` | Sampling efficiency | [code](experiments/cv_lasso/efficiency_comparison/) | [code](experiments/changepoint/efficiency_comparison/) |
+| `global_null_calibration` | Global-null calibration | [code](experiments/cv_lasso/global_null_calibration/) | [code](experiments/changepoint/global_null_calibration/) |
+| `power_comparison` | Power comparison | [code](experiments/cv_lasso/power_comparison/) | [code](experiments/changepoint/power_comparison/) |
+| `sampling_validation` | Sampling validation | [code](experiments/cv_lasso/sampling_validation/) | [code](experiments/changepoint/sampling_validation/) |
 
-The default `reproduce.R` command reads frozen inputs and prints the two
-efficiency tables, quadratic-null and directional rejection rates, coordinate
-mean diagnostics, and the pooled inference-indicator diagnostic table. It
-checks the trajectory archive against all four inference result objects.
-It does not generate data, call selectors, sample chains, or write files.
+## Reproduce figures and tables
 
-An explicit output directory additionally receives derived CSV tables
-(including per-test and per-signal diagnostics) and six inference PDFs.
-`plot_inference.R` only produces those six PDFs:
-
-- `inference_null_lasso.pdf`, `inference_nonnull_lasso.pdf`
-- `inference_null_cp.pdf`, `inference_nonnull_cp.pdf`
-- `Figure_CV_Inference_combined.pdf`, `Figure_CP_Inference_combined.pdf`
-
-The combined figures reuse the same panel objects and data as the independent
-figures. Numerical inputs already read by `reproduce.R` are reused for plotting.
-Exports in a chosen output directory are replaced on repeated runs; frozen
-RDS inputs are never overwritten.
-
-File-drawer and sampling-validation figures have separate plotting entries;
-they are not generated by the root workflow:
+To reproduce figures and tables from the supplied CV-Lasso and Changepoint
+results, run from the repository root:
 
 ```sh
-Rscript experiments/file_drawer/plot_fd.R
-Rscript experiments/cv_lasso/sampling_validation/plot_sampling_validation_lasso.R
-Rscript experiments/changepoint/sampling_validation/plot_sampling_validation_cp.R
+Rscript reproduce.R ../paper-output
 ```
 
-These commands redraw their supplied PDFs. The linked experiment READMEs also
-describe alternate result paths, frozen-bank inference, and explicit complete
-bank-generation and sampling commands. Those long-running commands are separate
-from offline reproduction and refuse existing numerical output files.
-No manuscript sources are needed or included.
+This summarizes the supplied results, recomputes coordinate and inference
+indicator diagnostics from saved samples, and generates their figures.
+**File Drawer is run from scratch** before plotting; the command does not rerun
+the CV-Lasso or Changepoint experiments.
 
-## Statistical conventions and reproduction limits
+Tables and diagnostics are printed to the console. All nine PDFs are saved in
+the specified directory: File Drawer, two calibration plots, two power plots,
+two sampling-validation plots, and one combined inference figure per application.
+The default output is `../paper-output`, beside the repository. Relative output
+paths use the working directory; the root entry requires an output directory
+outside the repository. It reads the supplied RDS paths, not the new files in
+the examples below.
 
-All current mean diagnostics use one ordered statistic sequence per call:
-`posterior::ess_basic(matrix(as.numeric(x), ncol = 1L), split = TRUE)` and
-`posterior::mcse_mean()` on the same matrix. Holding states are retained; no
-thinning or pooling of unrelated trajectories is performed.
+## Run experiments
 
-Efficiency is `1000 * minimum_coordinate_mean_ESS / N_query`.
-The PM/CPM denominator includes all 20,000 selector evaluations, including
-500 warm-up evaluations but excluding extra initialization verification.
-Rejection uses 3,000,000 attempts per application. The rare-event Gaussian
-centers differ from inference's zero-mean references; their definitions are in
-the [CV-Lasso efficiency README](experiments/cv_lasso/efficiency_comparison/README_efficiency_lasso.md)
-and [Changepoint efficiency README](experiments/changepoint/efficiency_comparison/README_efficiency_cp.md).
+Start each code block below from the repository root; its final `cd` returns
+there. New RDS and PDF files are written in the corresponding experiment
+directory with a `new_` prefix. Choose unused names to keep the supplied results
+and figures intact. Plotting a new RDS writes a PDF with the same basename;
+efficiency table commands print to the console.
 
-Sampling validation reports the minimum mean ESS and maximum mean MCSE
-independently across coordinates. Inference diagnostics use the actual
-inclusive upper-tail test indicators, not coordinate ESS or bulk ESS.
-Nonfinite ESS and MCSE remain missing and are excluded independently from
-their respective medians; the underlying p-values are not removed.
-Splitting one trajectory for diagnostics does not create independently
-initialized chains or establish convergence.
+Complete sampling can take substantial time. Seeds and stream assignments are
+set in the code or supplied configurations; reruns can differ numerically across
+R, package and numerical-library environments. Experiment settings are defined
+in the preparation functions and the configurations loaded by the runners.
 
-`inference_trajectories.rds` stores ordered production **statistic** sequences,
-test identities, and source records, not complete target/auxiliary chains.
-Its 3,400 trajectories support 3,800 test records: 400 Proposed trajectories
-are reused for both quadratic-null and directional tests at zero signal.
-Source hashes identify research inputs, not the release result RDS files.
-Directional summaries include zero and four positive signals. The Changepoint
-directional comparison is Proposed versus Data splitting.
+### File Drawer
 
-Frozen inputs support the offline calculations above. Exact historical
-sampling software and RNG information are available only where documented by
-each experiment; a new complete run does not imply bitwise reconstruction of
-the supplied results.
+Run the complete experiment and save its PDF to a new path:
 
+```sh
+cd experiments/file_drawer
+Rscript run_fd.R new_sampling_complexity_fd.pdf
+cd ../..
+```
+
+This runs 21 simulated configurations and computes 14 analytic rejection results.
+Results stay in memory; no result RDS is saved. Without an output argument,
+`run_fd.R` replaces `sampling_complexity_fd.pdf` in this directory.
+
+### CV-Lasso
+
+In inference figures, Proposed is the model-only method (`model_only`).
+
+#### Sampling efficiency
+
+Run all three methods on the supplied fixed benchmark in `efficiency_lasso.rds`,
+then print the new table. This does not regenerate the benchmark; rejection uses
+3,000,000 proposals.
+
+```sh
+cd experiments/cv_lasso/efficiency_comparison
+Rscript sampling_efficiency_lasso.R all new_efficiency_lasso.rds
+Rscript table_efficiency_lasso.R new_efficiency_lasso.rds
+cd ../../..
+```
+
+#### Global-null calibration
+
+Prepare a new bank, run inference on that bank, then plot its results:
+
+```sh
+cd experiments/cv_lasso/global_null_calibration
+Rscript prepare_calibration_lasso.R new_bank_calibration_lasso.rds
+Rscript calibration_lasso.R new_calibration_lasso.rds new_bank_calibration_lasso.rds
+Rscript plot_calibration_lasso.R new_calibration_lasso.rds
+cd ../../..
+```
+
+#### Power comparison
+
+```sh
+cd experiments/cv_lasso/power_comparison
+Rscript prepare_power_lasso.R new_bank_power_lasso.rds
+Rscript power_lasso.R new_power_lasso.rds new_bank_power_lasso.rds
+Rscript plot_power_lasso.R new_power_lasso.rds
+cd ../../..
+```
+
+#### Sampling validation
+
+Regenerate samples using the supplied validation configuration, analyze them,
+and plot the new samples:
+
+```sh
+cd experiments/cv_lasso/sampling_validation
+Rscript sampling_validation_lasso.R --generate new_validation_lasso.rds
+Rscript plot_sampling_validation_lasso.R new_validation_lasso.rds
+cd ../../..
+```
+
+### Changepoint
+
+In inference figures, Proposed is the full adaptive-selector method (`full_selector`).
+
+#### Sampling efficiency
+
+Run all three methods on the supplied fixed benchmark in `efficiency_cp.rds`,
+then print the new table. This does not regenerate the benchmark; rejection uses
+3,000,000 proposals.
+
+```sh
+cd experiments/changepoint/efficiency_comparison
+Rscript sampling_efficiency_cp.R all new_efficiency_cp.rds
+Rscript table_efficiency_cp.R new_efficiency_cp.rds
+cd ../../..
+```
+
+#### Global-null calibration
+
+```sh
+cd experiments/changepoint/global_null_calibration
+Rscript prepare_calibration_cp.R new_bank_calibration_cp.rds
+Rscript calibration_cp.R new_calibration_cp.rds new_bank_calibration_cp.rds
+Rscript plot_calibration_cp.R new_calibration_cp.rds
+cd ../../..
+```
+
+#### Power comparison
+
+```sh
+cd experiments/changepoint/power_comparison
+Rscript prepare_power_cp.R new_bank_power_cp.rds
+Rscript power_cp.R new_power_cp.rds new_bank_power_cp.rds
+Rscript plot_power_cp.R new_power_cp.rds
+cd ../../..
+```
+
+#### Sampling validation
+
+Regenerate samples using the supplied validation configuration, analyze them,
+and plot the new samples.
+
+```sh
+cd experiments/changepoint/sampling_validation
+Rscript sampling_validation_cp.R --generate new_validation_cp.rds
+Rscript plot_sampling_validation_cp.R new_validation_cp.rds
+cd ../../..
+```

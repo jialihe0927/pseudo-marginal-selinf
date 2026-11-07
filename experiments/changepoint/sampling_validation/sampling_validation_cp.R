@@ -1,58 +1,37 @@
-script_file <- if (sys.nframe() > 0L) {
-  files <- vapply(sys.frames(), function(frame) {
-    if (is.null(frame$ofile)) "" else as.character(frame$ofile)
-  }, character(1L))
-  tail(files[nzchar(files)], 1L)
-} else {
-  sub("^--file=", "", grep("^--file=", commandArgs(FALSE), value = TRUE)[1L])
-}
-script_directory <- dirname(normalizePath(script_file, winslash = "/", mustWork = TRUE))
-
-main <- function() {
-  options(stringsAsFactors = FALSE)
-
-  source(file.path(script_directory, "../../../diagnostics.R"), local = TRUE)
-  require_diagnostic_version()
-  source(file.path(script_directory, "functions_validation_cp.R"), local = TRUE)
-
-  # Offline analysis is the default; sampling requires an explicit --generate.
-  arguments <- commandArgs(trailingOnly = TRUE)
+main <- function(arguments = commandArgs(trailingOnly = TRUE)) {
   generate <- length(arguments) == 2L && identical(arguments[[1L]], "--generate")
-  if (length(arguments) && startsWith(arguments[[1L]], "--") && !generate) {
-    stop("Explicit sampling requires --generate output.rds.")
-  }
-  if (!generate && !length(arguments) %in% c(1L, 2L)) {
+  if (!length(arguments) %in% c(1L, 2L) ||
+      (!generate && startsWith(arguments[[1L]], "--"))) {
     stop("Usage: Rscript sampling_validation_cp.R output.rds [input.rds]; or --generate output.rds")
   }
   output_path <- if (generate) arguments[[2L]] else arguments[[1L]]
   if (file.exists(output_path) || dir.exists(output_path)) stop("Output already exists: ", output_path)
   input_path <- if (!generate && length(arguments) == 2L) {
     arguments[[2L]]
-  } else file.path(script_directory, "sampling_validation_cp.rds")
-  if (!file.exists(input_path)) stop("Validation input not found: ", input_path)
-  # Validate complete production trajectories before analyzing or regenerating.
+  } else "sampling_validation_cp.rds"
+
+  if (!requireNamespace("posterior", quietly = TRUE)) stop("Package 'posterior' is required.")
+  source("../../../diagnostics.R", local = TRUE)
+  source("functions_validation_cp.R", local = TRUE)
   object <- readRDS(input_path)
-  validate_samples_cp(object)
   result <- if (generate) {
-    regenerate_validation_cp(
-      object,
-      file.path(script_directory, "..", "efficiency_comparison")
-    )
+    regenerate_validation_cp(object, "../efficiency_comparison")
   } else analyze_validation_cp(object)
 
-  # Save to the protected output path and report numerical summaries.
   saveRDS(result, output_path, version = 3)
-  cat("Mean diagnostics: posterior::ess_basic(split = TRUE), posterior::mcse_mean;",
-      "R", result$config$software$diagnostics[["R"]],
-      "posterior", result$config$software$diagnostics[["posterior"]], "\n")
   cat("Undefined continuous ESS/MCSE:",
       sum(!is.finite(result$diagnostics$ess_mcse$ess_mean)), "\n")
   cat("Undefined MCMC tail indicator ESS/MCSE:",
       sum(result$diagnostics$tails$method != "Rejection" &
             !is.finite(result$diagnostics$tails$ess_indicator)), "\n")
   cat("Retained samples by method:\n")
-  print(vapply(result$samples, nrow, integer(1L)))
-  print(result$diagnostics$mixing, row.names = FALSE)
+  method_names <- c(Rejection = "Rejection", "Crude PMMH" = "PM", "Correlated PMMH" = "CPM")
+  counts <- vapply(result$samples, nrow, integer(1L))
+  names(counts) <- unname(method_names[names(counts)])
+  print(counts)
+  mixing <- result$diagnostics$mixing
+  mixing$method_label <- unname(method_names[mixing$method])
+  print(mixing[setdiff(names(mixing), "method")], row.names = FALSE)
   message("Saved ", normalizePath(output_path, winslash = "/"))
 }
 

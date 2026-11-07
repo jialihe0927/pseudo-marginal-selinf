@@ -1,53 +1,39 @@
-script_file <- if (sys.nframe() > 0L) {
-  files <- vapply(sys.frames(), function(frame) {
-    if (is.null(frame$ofile)) "" else as.character(frame$ofile)
-  }, character(1L))
-  tail(files[nzchar(files)], 1L)
-} else {
-  sub("^--file=", "", grep("^--file=", commandArgs(FALSE), value = TRUE)[1L])
-}
-script_directory <- dirname(normalizePath(script_file, winslash = "/", mustWork = TRUE))
+main <- function(arguments = commandArgs(trailingOnly = TRUE)) {
+  source("../../../diagnostics.R", local = TRUE)
+  source("functions_cp.R", local = TRUE)
+  source("samplers_cp.R", local = TRUE)
 
-main <- function() {
-  options(stringsAsFactors = FALSE)
-
-  source(file.path(script_directory, "../../../diagnostics.R"), local = TRUE)
-  source(file.path(script_directory, "functions_cp.R"), local = TRUE)
-  source(file.path(script_directory, "samplers_cp.R"), local = TRUE)
-
-  arguments <- commandArgs(trailingOnly = TRUE)
   if (length(arguments) != 2L || !arguments[[1L]] %in% c("pmmh", "rejection", "all")) {
     stop("Usage: Rscript sampling_efficiency_cp.R {pmmh|rejection|all} output.rds")
   }
   mode <- arguments[[1L]]
   output_path <- arguments[[2L]]
   if (file.exists(output_path) || dir.exists(output_path)) stop("Output already exists: ", output_path)
-  if (mode %in% c("pmmh", "all")) require_diagnostic_version()
+  if (mode %in% c("pmmh", "all") && !requireNamespace("posterior", quietly = TRUE)) {
+    stop("Package 'posterior' is required.")
+  }
 
-  paper_results <- readRDS(file.path(script_directory, "efficiency_cp.rds"))
+  paper_results <- readRDS("efficiency_cp.rds")
+  # Only the first coordinate of the saved Gaussian center is displaced:
+  # T_obs[1] - r * sign(T_obs[1]) * sqrt(Sigma_T[1, 1]); all others stay at T_obs.
   benchmark <- paper_results$benchmark
   config <- paper_results$config
-  validate_efficiency_config_cp(config)
 
   summarize_pmmh <- function(result) {
     coordinate_names <- paste0("T", seq_len(ncol(result$draws)))
     coordinate_ess <- vapply(
       seq_len(ncol(result$draws)),
       function(index) {
-        mean_ess_cp(
+        mean_diagnostics(
           result$draws[, index],
-          method = result$method,
-          coordinate = coordinate_names[index]
-        )
+          paste(result$method, coordinate_names[index], sep = ", ")
+        )$ess_mean
       },
       numeric(1L)
     )
-    minimum_ess <- if (any(!is.finite(coordinate_ess))) {
-      NA_real_
-    } else {
-      min(coordinate_ess)
-    }
+    minimum_ess <- min(coordinate_ess)
 
+    # The denominator includes warm-up selector calls; an undefined coordinate ESS stays NA.
     list(
       estimate = data.frame(
         method = result$method,
@@ -55,15 +41,14 @@ main <- function() {
         effective_samples = minimum_ess,
         efficiency_per_1000 = 1000 * minimum_ess / result$selector_evaluations,
         production_acceptance = mean(result$accepted),
+        # A zero selection estimate forces rejection; MH can also reject positive estimates.
         zero_estimate_rate = mean(!result$proposed_selected),
-        final_proposal_scale = result$final_proposal_scale,
-        stringsAsFactors = FALSE
+        final_proposal_scale = result$final_proposal_scale
       ),
       coordinate_ess = data.frame(
         method = result$method,
         coordinate = coordinate_names,
-        ess_mean = coordinate_ess,
-        stringsAsFactors = FALSE
+        ess_mean = coordinate_ess
       ),
       production_draws = result$draws
     )
@@ -78,14 +63,8 @@ main <- function() {
     )
     summaries <- lapply(runs, summarize_pmmh)
     parts$pmmh <- list(
-      estimates = do.call(
-        rbind,
-        lapply(summaries, `[[`, "estimate")
-      ),
-      coordinate_ess = do.call(
-        rbind,
-        lapply(summaries, `[[`, "coordinate_ess")
-      ),
+      estimates = do.call(rbind, lapply(summaries, `[[`, "estimate")),
+      coordinate_ess = do.call(rbind, lapply(summaries, `[[`, "coordinate_ess")),
       production_draws = setNames(
         lapply(summaries, `[[`, "production_draws"),
         methods
@@ -102,8 +81,7 @@ main <- function() {
         efficiency_per_1000 = 1000 * rejection$hits / rejection$attempts,
         production_acceptance = NA_real_,
         zero_estimate_rate = NA_real_,
-        final_proposal_scale = NA_real_,
-        stringsAsFactors = FALSE
+        final_proposal_scale = NA_real_
       ),
       accepted_draws = rejection$accepted
     )

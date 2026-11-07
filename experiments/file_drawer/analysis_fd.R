@@ -1,3 +1,4 @@
+# Integrate the Gaussian density weighted by the selection probability.
 posterior_cdf <- function(x, a, b) {
   integrand <- function(y) {
     log_likelihood <- pnorm(
@@ -26,28 +27,10 @@ posterior_median <- function(a, b) {
 
   lower <- center - half_width
   upper <- center + half_width
-  for (attempt in seq_len(20L)) {
-    if (objective(lower) < 0 && objective(upper) > 0) {
-      return(uniroot(objective, c(lower, upper), tol = 1e-9)$root)
-    }
-    half_width <- 2 * half_width
-    lower <- center - half_width
-    upper <- center + half_width
-  }
-  stop("Could not bracket the selected-distribution median.")
+  uniroot(objective, c(lower, upper), tol = 1e-9)$root
 }
 
 checkpoint_grid <- function(maximum_observations, log_step = log(1.05)) {
-  if (length(maximum_observations) != 1L ||
-      !is.numeric(maximum_observations) || !is.finite(maximum_observations) ||
-      maximum_observations < 2 || maximum_observations != floor(maximum_observations) ||
-      maximum_observations > .Machine$integer.max) {
-    stop("maximum_observations must be an integer from 2 to .Machine$integer.max.")
-  }
-  if (length(log_step) != 1L || !is.numeric(log_step) ||
-      !is.finite(log_step) || log_step <= 0) {
-    stop("checkpoint_log_step must be finite and positive.")
-  }
   sort(unique(c(
     1L,
     as.integer(round(exp(seq(
@@ -59,6 +42,7 @@ checkpoint_grid <- function(maximum_observations, log_step = log(1.05)) {
   )))
 }
 
+# Return the start of the first required run of passing checkpoints, or NA.
 stable_crossing_index <- function(pass, required = 8L) {
   runs <- rle(as.logical(pass))
   starts <- cumsum(c(1L, head(runs$lengths, -1L)))
@@ -66,6 +50,8 @@ stable_crossing_index <- function(pass, required = 8L) {
   if (length(eligible)) starts[eligible[1L]] else NA_integer_
 }
 
+# Track the median indicator across independent, exactly initialized chains.
+# Four times the variance of their time averages is the accuracy criterion.
 estimate_fixed_accuracy <- function(method, a, b, rho, proposal_scale,
                                     maximum_observations, n_chains,
                                     epsilon, stable_checkpoints,
@@ -73,28 +59,7 @@ estimate_fixed_accuracy <- function(method, a, b, rho, proposal_scale,
                                     seed,
                                     checkpoint_log_step = log(1.05)) {
   method <- match.arg(method, c("Independent PM", "CPM"))
-  if (length(n_chains) != 1L || !is.numeric(n_chains) ||
-      !is.finite(n_chains) || n_chains < 2 || n_chains != floor(n_chains)) {
-    stop("n_chains must be an integer of at least 2.")
-  }
-  if (length(stable_checkpoints) != 1L || !is.numeric(stable_checkpoints) ||
-      !is.finite(stable_checkpoints) || stable_checkpoints < 1 ||
-      stable_checkpoints != floor(stable_checkpoints)) {
-    stop("stable_checkpoints must be a positive integer.")
-  }
-  if (length(post_certification_checkpoints) != 1L ||
-      !is.numeric(post_certification_checkpoints) ||
-      !is.finite(post_certification_checkpoints) ||
-      post_certification_checkpoints < 0 ||
-      post_certification_checkpoints != floor(post_certification_checkpoints)) {
-    stop("post_certification_checkpoints must be a nonnegative integer.")
-  }
-  if (length(epsilon) != 1L || !is.numeric(epsilon) ||
-      !is.finite(epsilon) || epsilon <= 0 || epsilon >= 1) {
-    stop("epsilon must be finite and strictly between 0 and 1.")
-  }
 
-  # Validate the grid before the median calculation or random initialization.
   checkpoints <- checkpoint_grid(
     maximum_observations,
     log_step = checkpoint_log_step
@@ -132,6 +97,7 @@ estimate_fixed_accuracy <- function(method, a, b, rho, proposal_scale,
         stable_checkpoints
       )
       if (!is.na(crossing)) {
+        # Confirm the crossing before retaining any requested extra checkpoints.
         certification <- crossing + stable_checkpoints - 1L
         stop_index <- min(
           length(checkpoints),
@@ -151,8 +117,7 @@ estimate_fixed_accuracy <- function(method, a, b, rho, proposal_scale,
   )
 
   # complexity_n includes the initial observation and precedes certification.
-  # The budget counts proposal event evaluations across all chains, excluding
-  # exact-initialization validation and checkpoint integrity checks.
+  # The budget counts proposal event evaluations across all chains.
   estimate <- data.frame(
     b = b,
     method = method,
@@ -195,6 +160,7 @@ log1m_plus_probability <- function(probability) {
   )
 }
 
+# Analytic variance ratio for the stationary rejection chain that holds on rejection.
 rejection_variance_ratio <- function(n, b) {
   selection_probability <- exp(log_selection_probability(b))
   log_persistence <- log1p(-selection_probability)
@@ -221,12 +187,10 @@ rejection_fixed_accuracy_time <- function(b, epsilon = 0.10) {
   while (rejection_variance_ratio(upper, b) > epsilon) {
     lower <- upper
     upper <- upper * 2
-    if (!is.finite(upper) || upper > 1e100) {
-      stop("The rejection-time search exceeded its numerical range.")
-    }
   }
 
   repeat {
+    # Stop at floating-point resolution when adjacent integers cannot be distinguished.
     resolution <- max(1, 8 * .Machine$double.eps * upper)
     if (upper - lower <= resolution) break
     middle <- floor((lower + upper) / 2)

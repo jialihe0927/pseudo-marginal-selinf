@@ -6,10 +6,9 @@ script_file <- if (sys.nframe() > 0L) {
 } else {
   sub("^--file=", "", grep("^--file=", commandArgs(FALSE), value = TRUE)[1L])
 }
-script_directory <- dirname(normalizePath(script_file, winslash = "/", mustWork = TRUE))
+script_directory <- dirname(script_file)
 
 suppressPackageStartupMessages(library(ggplot2))
-source(file.path(script_directory, "functions_null_cp.R"), local = TRUE)
 source(file.path(script_directory, "../../../plot_style.R"), local = TRUE)
 
 step_ribbon_data <- function(data) {
@@ -38,6 +37,7 @@ marker_data <- function(data, method_ids, marker_x) {
   do.call(rbind, rows)
 }
 
+# Pointwise across-dataset ECDF +/- one SE, clipped to [0, 1].
 make_ecdf_data <- function(p_values, method_id) {
   n <- length(p_values)
   x <- sort(unique(c(0, p_values, 0.05, 0.20, 0.40, 0.60, 0.80, 1)))
@@ -55,7 +55,6 @@ make_ecdf_data <- function(p_values, method_id) {
 }
 
 make_inference_figure <- function(result) {
-  validate_result_null_cp(result)
   data <- result$dataset_results
   method_ids <- as.character(result$config$methods$method_id)
 
@@ -83,11 +82,8 @@ make_inference_figure <- function(result) {
     naive_gaussian = "#9A86B2"
   )
   shapes <- c(full_selector = 1, fixed_k = 2, naive_gaussian = 4)
-  labels <- c(
-    full_selector = "Proposed",
-    fixed_k = "Fixed-K",
-    naive_gaussian = "Naive"
-  )
+  labels <- unname(c(full_selector = "Proposed", fixed_k = "Fixed-K",
+                     naive_gaussian = "Naive")[method_ids])
 
   ggplot(plot_data, aes(x = x, y = ecdf, group = method_id)) +
     geom_ribbon(
@@ -155,10 +151,9 @@ make_inference_figure <- function(result) {
 main <- function() {
   args <- commandArgs(trailingOnly = TRUE)
   if (length(args) > 1L) {
-    stop("Usage: Rscript plot_inference_null_cp.R [results.rds]")
+    stop("Usage: Rscript plot_calibration_cp.R [results.rds]")
   }
-  input_path <- if (length(args)) args[[1L]] else file.path(script_directory, "inference_null_cp.rds")
-  if (!file.exists(input_path)) stop("Results file not found: ", input_path)
+  input_path <- if (length(args)) args[[1L]] else file.path(script_directory, "calibration_cp.rds")
 
   output_path <- paste0(tools::file_path_sans_ext(input_path), ".pdf")
 

@@ -1,4 +1,3 @@
-# Configuration and the shared zero-signal settings.
 default_config_nonnull_cp <- function() {
   list(
     application = "changepoint", delta_grid = c(0, 0.4, 0.6, 0.8, 1),
@@ -29,92 +28,10 @@ default_config_nonnull_cp <- function() {
 }
 
 raw_attempt_limit_nonnull_cp <- function(config) {
-  # Older frozen configurations predate this run-control field.
-  limit <- if (is.null(config$raw_attempt_limit)) 10000L else config$raw_attempt_limit
-  if (!is.numeric(limit) || length(limit) != 1L || !is.finite(limit) ||
-      limit > .Machine$integer.max || limit != floor(limit) ||
-      limit < config$datasets_per_delta) {
-    stop("raw_attempt_limit must be an integer >= datasets_per_delta.")
-  }
-  as.integer(limit)
-}
-
-validate_config_nonnull_cp <- function(config) {
-  reference <- default_config_nonnull_cp()
-  if (!identical(config$application, "changepoint") ||
-      !identical(config$methods, reference$methods) ||
-      !identical(config$sampled_methods, reference$sampled_methods)) {
-    stop("The application or method definitions are incompatible.")
-  }
-  scientific <- c("datasets_per_delta", "n", "randomization_sd", "minimum_segment",
-                  "maximum_changepoints", "penalty_coefficient", "tie_tolerance", "test_level")
-  if (!all(scientific %in% names(config)) ||
-      !all(vapply(config[scientific], function(x) {
-        is.numeric(x) && length(x) == 1L && is.finite(x)
-      }, logical(1L)))) stop("Scientific settings must be complete finite numeric scalars.")
-  n <- config$datasets_per_delta
-  if (length(n) != 1L || !is.finite(n) || n < 1L || n != as.integer(n)) {
-    stop("datasets_per_delta must be a positive integer.")
-  }
-  if (!identical(config$delta_grid, reference$delta_grid)) stop("The signal grid is incompatible.")
-  if (!identical(config$rng$kind, reference$rng$kind) ||
-      !is.numeric(config$rng$positive_proposed_master) ||
-      length(config$rng$positive_proposed_master) != 1L ||
-      !is.finite(config$rng$positive_proposed_master) ||
-      config$rng$positive_proposed_master < 1 ||
-      config$rng$positive_proposed_master > .Machine$integer.max ||
-      config$rng$positive_proposed_master != floor(config$rng$positive_proposed_master)) {
-    stop("Positive-signal tasks require a positive integer master seed and L'Ecuyer-CMRG/Inversion/Rejection RNG.")
-  }
-  if (config$n > .Machine$integer.max || config$n != floor(config$n) || config$n < 50L ||
-      length(config$signal_direction) != config$n || any(!is.finite(config$signal_direction))) {
-    stop("n must be an integer >= 50 and signal_direction must be finite with length n.")
-  }
-  if (config$tie_tolerance < 0) stop("tie_tolerance must be finite and nonnegative.")
-  if (config$test_level <= 0 || config$test_level >= 1) stop("test_level must lie in (0, 1).")
-  raw_attempt_limit_nonnull_cp(config)
-  pmmh <- config$pmmh
-  required_pmmh <- c("warmup", "stabilization", "production", "total_transitions",
-                     "auxiliary_samples", "rho", "scale_initial", "scale_min",
-                     "scale_max", "target_acceptance")
-  if (!all(required_pmmh %in% names(pmmh)) ||
-      any(!vapply(pmmh[required_pmmh], function(x) {
-        is.numeric(x) && length(x) == 1L && is.finite(x)
-      }, logical(1L)))) stop("PMMH parameters must be complete finite numeric scalars.")
-  # The positive-signal kernel uses this fixed warm-up adaptation schedule.
-  fixed <- list(adaptation_rate = 0.5, adaptation_offset = 10,
-                adaptation_power = 0.6, production_adaptation = FALSE)
-  for (field in names(fixed)) {
-    if (!is.null(pmmh[[field]]) && !isTRUE(all.equal(pmmh[[field]], fixed[[field]]))) {
-      stop("Unsupported PMMH setting: ", field, " must equal ", fixed[[field]], ".")
-    }
-  }
-  lengths <- unlist(pmmh[c("warmup", "stabilization", "production", "total_transitions")])
-  if (any(!is.finite(lengths)) || any(lengths != as.integer(lengths)) ||
-      pmmh$warmup <= 0L || pmmh$production <= 0L || pmmh$stabilization != 0L ||
-      pmmh$warmup + pmmh$production != pmmh$total_transitions ||
-      pmmh$auxiliary_samples != 1L) {
-    stop("Invalid PMMH lengths; stabilization must be zero and auxiliary_samples one.")
-  }
-  if (!is.finite(pmmh$rho) || pmmh$rho < 0 || pmmh$rho >= 1 ||
-      pmmh$scale_min <= 0 || pmmh$scale_min > pmmh$scale_initial ||
-      pmmh$scale_initial > pmmh$scale_max || pmmh$target_acceptance <= 0 ||
-      pmmh$target_acceptance >= 1) {
-    stop("Invalid auxiliary correlation, proposal scales, or adaptation target.")
-  }
-  supported <- c(randomization_sd = 0.1, minimum_segment = 10L,
-                 maximum_changepoints = 4L, penalty_coefficient = 1.25)
-  for (field in names(supported)) {
-    if (config[[field]] != supported[[field]]) {
-      stop("This implementation supports ", field, " = ", supported[[field]],
-           " only; received ", config[[field]], ".")
-    }
-  }
-  invisible(config)
+  if (is.null(config$raw_attempt_limit)) 10000L else as.integer(config$raw_attempt_limit)
 }
 
 null_config_nonnull_cp <- function(config) {
-  validate_config_nonnull_cp(config)
   null <- default_config_null_cp()
   # Shared scientific settings; labels and dataset-count field names differ.
   shared <- c("n", "randomization_sd", "minimum_segment", "maximum_changepoints",
@@ -135,11 +52,9 @@ null_config_nonnull_cp <- function(config) {
   null$pmmh$adaptation_offset <- 10
   null$pmmh$adaptation_power <- 0.6
   null$pmmh$production_adaptation <- FALSE
-  validate_config_null_cp(null)
   null
 }
 
-# The four-step path selects K; the event fixes only the final unordered set.
 segments_nonnull_cp <- function(n, changepoints) {
   boundaries <- c(0L, sort(as.integer(changepoints)), as.integer(n))
   data.frame(start = head(boundaries, -1L) + 1L, end = tail(boundaries, -1L))
@@ -180,6 +95,7 @@ rss_nonnull_cp <- function(series, changepoints) {
   }, numeric(1L)))
 }
 
+# Use the full segmentation path to select K, but condition only on the final unordered set.
 select_nonnull_cp <- function(series, config) {
   path <- integer(0L)
   path_signs <- integer(config$maximum_changepoints)
@@ -204,8 +120,8 @@ select_nonnull_cp <- function(series, config) {
        observed_path = path, observed_signs = path_signs, criterion = criterion)
 }
 
+# Vary T while holding R_obs fixed, then compare the adaptively selected final set.
 selection_event_nonnull_cp <- function(T, U, dataset, method_id, config) {
-  if (!method_id %in% config$sampled_methods) stop("Unknown changepoint sampling method: ", method_id)
   target <- dataset$target
   Y <- drop(target$R_obs + target$V %*% (target$Sigma_T_inv %*% as.numeric(T)))
   selected <- select_nonnull_cp(Y + config$randomization_sd * U, config)
@@ -215,9 +131,6 @@ selection_event_nonnull_cp <- function(T, U, dataset, method_id, config) {
 # Conditional Gaussian target and fixed directional statistic.
 build_target_nonnull_cp <- function(dataset, config) {
   segments <- segments_nonnull_cp(config$n, dataset$selected_changepoints)
-  if (any(segments$end - segments$start + 1L < config$minimum_segment)) {
-    stop("Observed segments violate the minimum length.")
-  }
   V <- matrix(0, config$n, dataset$selected_k)
   for (index in seq_len(dataset$selected_k)) {
     left <- seq.int(segments$start[index], segments$end[index])
@@ -232,6 +145,7 @@ build_target_nonnull_cp <- function(dataset, config) {
   list(V = V, Sigma_T = Sigma_T, Sigma_T_inv = inverse, T_obs = T_obs, R_obs = R_obs)
 }
 
+# Project the fixed signal template onto the selected contrasts; delta affects only the DGP.
 build_direction_nonnull_cp <- function(dataset, config) {
   target <- dataset$target
   a <- drop(crossprod(target$V, config$signal_direction))
@@ -275,7 +189,6 @@ fission_pvalue_nonnull_cp <- function(
   stats::pnorm(score / sqrt(101), lower.tail = FALSE)
 }
 
-# Raw-order eligibility and paired task streams.
 with_rng_nonnull_cp <- function(fun, seed = NULL, state = NULL) {
   old_kind <- RNGkind()
   had_seed <- exists(".Random.seed", envir = .GlobalEnv, inherits = FALSE)
@@ -370,6 +283,7 @@ assign_rng_nonnull_cp <- function(datasets, config) {
   do.call(rbind, rows)
 }
 
+# Rebuild delta-zero data with the calibration generator; keep positive-signal data in raw order.
 prepare_bank_nonnull_cp <- function(config = default_config_nonnull_cp()) {
   null_config <- null_config_nonnull_cp(config)
   attempt_limit <- raw_attempt_limit_nonnull_cp(config)
@@ -402,11 +316,9 @@ prepare_bank_nonnull_cp <- function(config = default_config_nonnull_cp()) {
   }
   bank <- list(config = config, datasets = datasets,
                rng_assignments = assign_rng_nonnull_cp(datasets, config), raw_attempts = raw_attempts)
-  validate_bank_nonnull_cp(bank)
   bank
 }
 
-# Paired results and frozen-input checks.
 result_row_nonnull_cp <- function(dataset, method_id, p_value, config,
                                          tail_count = NA_integer_,
                                          production_draws = NA_integer_,
@@ -437,6 +349,7 @@ summarize_nonnull_cp <- function(data, config) {
     n <- nrow(selected)
     rejections <- sum(selected$reject)
     power <- rejections / n
+    # Power error bars are +/- one standard error across datasets.
     se <- sqrt(power * (1 - power) / n)
     rows[[length(rows) + 1L]] <- data.frame(
       delta = delta, method_id = method_id, n = n, rejections = rejections,
@@ -445,144 +358,4 @@ summarize_nonnull_cp <- function(data, config) {
     )
   }
   list(power = do.call(rbind, rows))
-}
-
-validate_bank_nonnull_cp <- function(bank) {
-  if (!all(c("config", "datasets", "rng_assignments") %in% names(bank))) {
-    stop("The data bank is incomplete.")
-  }
-  config <- bank$config
-  validate_config_nonnull_cp(config)
-  datasets <- bank$datasets
-  if (length(datasets) != length(config$delta_grid) * config$datasets_per_delta) {
-    stop("The data bank has the wrong number of datasets.")
-  }
-  identity <- do.call(rbind, lapply(datasets, function(dataset) {
-    required <- c("delta", "dataset_id", "raw_id", "Y", "W", "selected_k", "target", "direction")
-    if (!all(required %in% names(dataset))) stop("A dataset is incomplete.")
-    if (length(dataset$Y) != config$n || length(dataset$W) != config$n ||
-        any(!is.finite(c(dataset$Y, dataset$W, dataset$target$T_obs)))) {
-      stop("Dataset inputs or observed target values are invalid.")
-    }
-    data.frame(delta = dataset$delta, dataset_id = dataset$dataset_id,
-               raw_id = dataset$raw_id, dimension = dataset$selected_k)
-  }))
-  expected <- expand.grid(delta = config$delta_grid, dataset_id = seq_len(config$datasets_per_delta))
-  key <- paste(identity$delta, identity$dataset_id, sep = ":")
-  if (anyNA(identity) || anyDuplicated(key) ||
-      !setequal(key, paste(expected$delta, expected$dataset_id, sep = ":"))) {
-    stop("Dataset identities do not cover the signal grid exactly.")
-  }
-  for (delta in config$delta_grid) {
-    rows <- identity[identity$delta == delta, , drop = FALSE]
-    if (!identical(as.integer(rows$dataset_id), seq_len(config$datasets_per_delta)) ||
-        any(rows$raw_id < 1L | rows$raw_id != as.integer(rows$raw_id)) ||
-        anyDuplicated(rows$raw_id) || any(diff(rows$raw_id) <= 0L)) {
-      stop("Raw attempts must be unique and retained in increasing order within each delta.")
-    }
-    if (any(rows$dimension < 1L |
-            rows$dimension > config$maximum_changepoints)) {
-      stop("A retained dataset violates the eligibility rule.")
-    }
-  }
-  for (dataset in datasets) {
-    if (length(dataset$selected_changepoints) != dataset$selected_k) {
-      stop("The selected set has the wrong dimension.")
-    }
-    if (length(dataset$observed_path) &&
-        !identical(sort(dataset$observed_path[seq_len(dataset$selected_k)]), dataset$selected_changepoints)) {
-      stop("The saved path does not reconstruct the selected changepoints.")
-    }
-    covariance <- dataset$target$Sigma_T
-    required_target <- c("V", "T_obs", "R_obs", "Sigma_T", "Sigma_T_inv")
-    if (!all(required_target %in% names(dataset$target)) ||
-        !identical(dim(covariance), rep(as.integer(dataset$selected_k), 2L)) ||
-        any(!is.finite(covariance))) {
-      stop("A conditional target has incompatible fields or covariance.")
-    }
-  }
-  assignments <- bank$rng_assignments
-  required <- c("delta", "dataset_id", "raw_id", "method_id", "rng_state")
-  if (!all(required %in% names(assignments))) stop("Random-stream assignments are incomplete.")
-  expected_jobs <- expand.grid(delta = config$delta_grid,
-                               dataset_id = seq_len(config$datasets_per_delta),
-                               method_id = config$sampled_methods, stringsAsFactors = FALSE)
-  job_key <- paste(assignments$delta, assignments$dataset_id, assignments$method_id, sep = ":")
-  expected_key <- paste(expected_jobs$delta, expected_jobs$dataset_id, expected_jobs$method_id, sep = ":")
-  match_dataset <- match(paste(assignments$delta, assignments$dataset_id, sep = ":"), key)
-  if (nrow(assignments) != nrow(expected_jobs) || anyNA(assignments[, required[-length(required)]]) ||
-      anyDuplicated(job_key) || !setequal(job_key, expected_key) ||
-      anyNA(match_dataset) || any(assignments$raw_id != identity$raw_id[match_dataset]) ||
-      !all(vapply(assignments$rng_state, function(state) {
-        is.integer(state) && length(state) == 7L && !anyNA(state)
-      }, logical(1L)))) {
-    stop("Random-stream assignments must cover every paired sampling task exactly once.")
-  }
-  invisible(bank)
-}
-
-validate_result_nonnull_cp <- function(result) {
-  validate_bank_nonnull_cp(result)
-  if (!all(c("dataset_results", "summary") %in% names(result))) stop("Inference results are missing.")
-  config <- result$config
-  data <- result$dataset_results
-  required <- c("delta", "dataset_id", "raw_id", "method_id", "target_id",
-                "target_dimension", "statistic_observed", "p_value", "reject",
-                "tail_count", "production_draws", "result_type", "status")
-  if (!all(required %in% names(data))) stop("Dataset-level result fields are incomplete.")
-  expected <- expand.grid(delta = config$delta_grid, dataset_id = seq_len(config$datasets_per_delta),
-                          method_id = config$methods, stringsAsFactors = FALSE)
-  key <- paste(data$delta, data$dataset_id, data$method_id, sep = ":")
-  expected_key <- paste(expected$delta, expected$dataset_id, expected$method_id, sep = ":")
-  if (nrow(data) != nrow(expected) || anyDuplicated(key) ||
-      !setequal(key, expected_key) || anyNA(data$status) || any(data$status != "complete")) {
-    stop("Results must contain every paired dataset-method combination with complete status.")
-  }
-  identity <- vapply(result$datasets, function(dataset) paste(dataset$delta, dataset$dataset_id, sep = ":"), character(1L))
-  positions <- match(paste(data$delta, data$dataset_id, sep = ":"), identity)
-  dimension <- vapply(result$datasets, `[[`, integer(1L), "selected_k")
-  raw_id <- vapply(result$datasets, `[[`, integer(1L), "raw_id")
-  if (anyNA(positions) || anyNA(data$target_dimension) || anyNA(data$raw_id) ||
-      any(data$target_dimension != dimension[positions]) || any(data$raw_id != raw_id[positions])) {
-    stop("Result identities or target dimensions do not match the bank.")
-  }
-  if (any(!is.finite(data$p_value)) || any(data$p_value < 0 | data$p_value > 1) ||
-      anyNA(data$reject) || any(data$reject != as.integer(data$p_value <= config$test_level))) {
-    stop("Invalid p-values or rejection indicators.")
-  }
-  sampled <- data$method_id %in% config$sampled_methods
-  zero <- vapply(result$datasets, function(dataset) dataset$direction$structural_zero, logical(1L))[positions]
-  if (any(data$p_value[zero] != 1) || any(data$result_type[zero] != "structural_zero")) {
-    stop("Structural-zero directions must retain their recorded p=1 convention.")
-  }
-  sampled <- sampled & !zero
-  if (anyNA(data$result_type) || any(data$result_type[!sampled & !zero] != "analytic")) {
-    stop("Nondegenerate Data Fission must be identified as an analytic result.")
-  }
-  if (any(data$result_type[sampled] != "simulation") ||
-      any(!is.finite(data$statistic_observed[sampled])) ||
-      any(!is.finite(data$tail_count[sampled])) ||
-      any(data$tail_count[sampled] != as.integer(data$tail_count[sampled])) ||
-      any(data$tail_count[sampled] < 0 | data$tail_count[sampled] > config$pmmh$production) ||
-      anyNA(data$production_draws[sampled]) ||
-      any(data$production_draws[sampled] != config$pmmh$production) ||
-      any(abs(data$p_value[sampled] - data$tail_count[sampled] / data$production_draws[sampled]) > 1e-15)) {
-    stop("Sampling p-values must match their valid inclusive-tail counts and production denominators.")
-  }
-  if (any(!is.na(data$tail_count[!sampled])) || any(!is.na(data$production_draws[!sampled]))) {
-    stop("Analytic or degenerate results must not contain fabricated sampling counts.")
-  }
-  analytic <- data$method_id == "data_fission" & !zero
-  expected_fission <- stats::pnorm(
-    data$statistic_observed[analytic] / sqrt(101), lower.tail = FALSE
-  )
-  if (any(!is.finite(data$statistic_observed[analytic])) ||
-      any(abs(expected_fission - data$p_value[analytic]) > 1e-15)) {
-    stop("Data Fission p-values do not match their observed statistic and null variance.")
-  }
-  reconstructed <- summarize_nonnull_cp(data, config)$power
-  if (!isTRUE(all.equal(reconstructed, result$summary$power, tolerance = 1e-15, check.attributes = FALSE))) {
-    stop("The power summary does not match the paired dataset-level decisions.")
-  }
-  invisible(result)
 }

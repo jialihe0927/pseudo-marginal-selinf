@@ -1,25 +1,12 @@
-script_file <- if (sys.nframe() > 0L) {
-  files <- vapply(sys.frames(), function(frame) {
-    if (is.null(frame$ofile)) "" else as.character(frame$ofile)
-  }, character(1L))
-  tail(files[nzchar(files)], 1L)
-} else {
-  sub("^--file=", "", grep("^--file=", commandArgs(FALSE), value = TRUE)[1L])
-}
-script_directory <- dirname(script_file)
-
 main <- function(arguments = commandArgs(trailingOnly = TRUE)) {
-  options(stringsAsFactors = FALSE)
-
-  source(file.path(script_directory, "../../../diagnostics.R"), local = TRUE)
-  require_diagnostic_version()
+  source("../../../diagnostics.R", local = TRUE)
 
   if (!requireNamespace("glmnet", quietly = TRUE) ||
       !requireNamespace("posterior", quietly = TRUE)) {
     stop("Packages 'glmnet' and 'posterior' are required.")
   }
-  source(file.path(script_directory, "functions_lasso.R"), local = TRUE)
-  source(file.path(script_directory, "samplers_lasso.R"), local = TRUE)
+  source("functions_lasso.R", local = TRUE)
+  source("samplers_lasso.R", local = TRUE)
 
   if (length(arguments) != 2L || !arguments[[1L]] %in% c("pmmh", "rejection", "all")) {
     stop("Usage: Rscript sampling_efficiency_lasso.R {pmmh|rejection|all} output.rds")
@@ -30,30 +17,27 @@ main <- function(arguments = commandArgs(trailingOnly = TRUE)) {
     stop("Output already exists: ", output_path)
   }
 
-  paper_results <- readRDS(file.path(script_directory, "efficiency_lasso.rds"))
+  paper_results <- readRDS("efficiency_lasso.rds")
+  # The saved rare-event center is T_obs - r*u, with u the unit-Mahalanobis
+  # vector along T_obs; the design, folds, residual and model event stay fixed.
   benchmark <- paper_results$benchmark
   config <- paper_results$config
-  validate_efficiency_config_lasso(config)
 
   summarize_pmmh <- function(result) {
     coordinate_names <- paste0("T", seq_len(ncol(result$draws)))
     coordinate_ess <- vapply(
       seq_len(ncol(result$draws)),
       function(index) {
-        mean_ess_lasso(
+        mean_diagnostics(
           result$draws[, index],
-          method = result$method,
-          coordinate = coordinate_names[index]
-        )
+          paste(result$method, coordinate_names[index], sep = ", ")
+        )$ess_mean
       },
       numeric(1L)
     )
-    minimum_ess <- if (any(!is.finite(coordinate_ess))) {
-      NA_real_
-    } else {
-      min(coordinate_ess)
-    }
+    minimum_ess <- min(coordinate_ess)
 
+    # The denominator includes warm-up selector calls; an undefined coordinate ESS stays NA.
     list(
       estimate = data.frame(
         method = result$method,
@@ -61,15 +45,14 @@ main <- function(arguments = commandArgs(trailingOnly = TRUE)) {
         effective_samples = minimum_ess,
         efficiency_per_1000 = 1000 * minimum_ess / result$selector_evaluations,
         production_acceptance = mean(result$accepted),
+        # A zero selection estimate forces rejection; MH can also reject positive estimates.
         zero_estimate_rate = mean(!result$proposed_selected),
-        final_proposal_scale = result$final_proposal_scale,
-        stringsAsFactors = FALSE
+        final_proposal_scale = result$final_proposal_scale
       ),
       coordinate_ess = data.frame(
         method = result$method,
         coordinate = coordinate_names,
-        ess_mean = coordinate_ess,
-        stringsAsFactors = FALSE
+        ess_mean = coordinate_ess
       ),
       production_draws = result$draws
     )
@@ -84,14 +67,8 @@ main <- function(arguments = commandArgs(trailingOnly = TRUE)) {
     )
     summaries <- lapply(runs, summarize_pmmh)
     parts$pmmh <- list(
-      estimates = do.call(
-        rbind,
-        lapply(summaries, `[[`, "estimate")
-      ),
-      coordinate_ess = do.call(
-        rbind,
-        lapply(summaries, `[[`, "coordinate_ess")
-      ),
+      estimates = do.call(rbind, lapply(summaries, `[[`, "estimate")),
+      coordinate_ess = do.call(rbind, lapply(summaries, `[[`, "coordinate_ess")),
       production_draws = setNames(
         lapply(summaries, `[[`, "production_draws"),
         methods
@@ -108,8 +85,7 @@ main <- function(arguments = commandArgs(trailingOnly = TRUE)) {
         efficiency_per_1000 = 1000 * rejection$hits / rejection$attempts,
         production_acceptance = NA_real_,
         zero_estimate_rate = NA_real_,
-        final_proposal_scale = NA_real_,
-        stringsAsFactors = FALSE
+        final_proposal_scale = NA_real_
       ),
       accepted_draws = rejection$accepted
     )

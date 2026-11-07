@@ -1,19 +1,8 @@
-script_file <- if (sys.nframe() > 0L) {
-  files <- vapply(sys.frames(), function(frame) {
-    if (is.null(frame$ofile)) "" else as.character(frame$ofile)
-  }, character(1L))
-  tail(files[nzchar(files)], 1L)
-} else {
-  sub("^--file=", "", grep("^--file=", commandArgs(FALSE), value = TRUE)[1L])
-}
-script_directory <- dirname(normalizePath(script_file, winslash = "/", mustWork = TRUE))
-
-source(file.path(script_directory, "functions_validation_cp.R"), local = TRUE)
 suppressPackageStartupMessages(library(ggplot2))
 
+# Descriptive coordinate ECDFs compare marginals, without asserting joint agreement or convergence.
 make_coordinate_figure_cp <- function(object) {
-  validate_samples_cp(object)
-  methods <- validation_methods_cp()
+  methods <- c("Rejection", "Crude PMMH", "Correlated PMMH")
   coordinates <- object$config$coordinates
   colors <- setNames(c("#4d4d4d", "#bc6c65", "#4878a8"), methods)
   shapes <- setNames(c(16L, 17L, 15L), methods)
@@ -22,10 +11,10 @@ make_coordinate_figure_cp <- function(object) {
   bounds <- list()
   for (coordinate in coordinates) {
     pooled <- unlist(lapply(object$samples, function(x) x[, coordinate]), use.names = FALSE)
-    range <- range(pooled)
-    padding <- diff(range) * 0.035
-    lower <- range[1L] - padding
-    upper <- range[2L] + padding
+    limits <- range(pooled)
+    padding <- diff(limits) * 0.035
+    lower <- limits[1L] - padding
+    upper <- limits[2L] + padding
     bounds[[coordinate]] <- c(lower, upper)
     for (method in methods) {
       x <- object$samples[[method]][, coordinate]
@@ -43,19 +32,20 @@ make_coordinate_figure_cp <- function(object) {
   }
   lines <- do.call(rbind, lines)
   markers <- do.call(rbind, markers)
-  range <- unname(bounds[["T1"]])
-  span <- diff(range)
+  limits <- unname(bounds[["T1"]])
+  span <- diff(limits)
   legend <- data.frame(
     variable = "T1", method = methods,
-    x = range[1L] + 0.055 * span,
-    xend = range[1L] + 0.155 * span,
-    point_x = range[1L] + 0.105 * span,
-    text_x = range[1L] + 0.185 * span,
-    y = c(0.952, 0.887, 0.822), label = c("Rejection", "PM", "CPM")
+    x = limits[1L] + 0.055 * span,
+    xend = limits[1L] + 0.155 * span,
+    point_x = limits[1L] + 0.105 * span,
+    text_x = limits[1L] + 0.185 * span,
+    y = c(0.952, 0.887, 0.822),
+    label = unname(c(Rejection = "Rejection", "Crude PMMH" = "PM", "Correlated PMMH" = "CPM")[methods])
   )
   box <- data.frame(
-    variable = "T1", xmin = range[1L] + 0.025 * span,
-    xmax = range[1L] + 0.43 * span, ymin = 0.788, ymax = 0.986
+    variable = "T1", xmin = limits[1L] + 0.025 * span,
+    xmax = limits[1L] + 0.43 * span, ymin = 0.788, ymax = 0.986
   )
   lines$variable <- factor(lines$variable, levels = coordinates)
   markers$variable <- factor(markers$variable, levels = coordinates)
@@ -106,15 +96,10 @@ make_coordinate_figure_cp <- function(object) {
     )
 }
 
-main <- function() {
-  if (!requireNamespace("ggplot2", quietly = TRUE)) stop("Package 'ggplot2' is required.")
+main <- function(arguments = commandArgs(trailingOnly = TRUE)) {
   if (!capabilities("cairo")) stop("Cairo PDF support is required for the paper figure.")
-  arguments <- commandArgs(trailingOnly = TRUE)
   if (length(arguments) > 1L) stop("Usage: Rscript plot_sampling_validation_cp.R [input.rds]")
-  input_path <- if (length(arguments)) arguments[[1L]] else {
-    file.path(script_directory, "sampling_validation_cp.rds")
-  }
-  if (!file.exists(input_path)) stop("Validation input not found: ", input_path)
+  input_path <- if (length(arguments)) arguments[[1L]] else "sampling_validation_cp.rds"
   object <- readRDS(input_path)
   figure <- make_coordinate_figure_cp(object)
   ggsave(

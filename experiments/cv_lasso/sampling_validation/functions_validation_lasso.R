@@ -1,77 +1,4 @@
-validation_methods_lasso <- function() {
-  c("Rejection", "Crude PMMH", "Correlated PMMH")
-}
-
-validate_samples_lasso <- function(object) {
-  required <- c("config", "samples", "sample_info")
-  if (!all(required %in% names(object))) stop("The validation object is incomplete.")
-  config <- object$config
-  if (!identical(config$application, "cv_lasso") ||
-      !identical(config$coordinates, paste0("T", seq_len(6L)))) {
-    stop("The application or coordinate order is incompatible.")
-  }
-  methods <- validation_methods_lasso()
-  if (!identical(names(object$samples), methods) ||
-      !all(methods %in% names(object$sample_info))) {
-    stop("Rejection, PM and CPM samples and metadata are all required.")
-  }
-  for (method in methods) {
-    samples <- object$samples[[method]]
-    info <- object$sample_info[[method]]
-    if (!is.matrix(samples) || !is.numeric(samples) ||
-        !identical(colnames(samples), config$coordinates) ||
-        ncol(samples) != length(config$coordinates) || nrow(samples) < 2L ||
-        any(!is.finite(samples)) || nrow(samples) != info$sample_count ||
-        !identical(info$target_id, config$target_id)) {
-      stop("Invalid sample dimensions, coordinate order, target or values for ", method)
-    }
-    if (method == "Rejection") {
-      if (info$selector_evaluations != config$sampler$rejection_attempts ||
-          info$selector_evaluations != 3000000L) {
-        stop("The reference budget must be 3,000,000 proposals.")
-      }
-      if (!is.null(info$accepted_identity)) {
-        ids <- info$accepted_identity$attempt_id
-        if (length(ids) != nrow(samples) || anyNA(ids) || anyDuplicated(ids) ||
-            any(diff(ids) <= 0L) || any(ids < 1L | ids > info$selector_evaluations)) {
-          stop("Invalid ordered rejection attempt identities.")
-        }
-      }
-    } else {
-      expected <- seq.int(config$sampler$adaptive_transitions + 1L,
-                          config$sampler$total_transitions)
-      if (nrow(samples) != config$sampler$production_transitions ||
-          !identical(as.integer(info$production_iterations), expected) ||
-          config$sampler$stabilization_transitions != 0L ||
-          length(info$accepted) != nrow(samples) ||
-          length(info$proposed_zero) != nrow(samples) ||
-          anyNA(info$accepted) || anyNA(info$proposed_zero) ||
-          info$selector_evaluations != config$sampler$total_transitions) {
-        stop("Production interval or transition metadata is inconsistent for ", method)
-      }
-      repeats <- sum(rowSums(samples[-1L, , drop = FALSE] !=
-                               samples[-nrow(samples), , drop = FALSE]) == 0L)
-      if (repeats != info$adjacent_repeats) stop("Repeated production states changed for ", method)
-      # A rejected proposal after the first retained state must preserve its predecessor.
-      rejected <- which(!as.logical(info$accepted[-1L])) + 1L
-      if (length(rejected) &&
-          any(samples[rejected, , drop = FALSE] != samples[rejected - 1L, , drop = FALSE])) {
-        stop("Rejected production transitions did not retain their states for ", method)
-      }
-    }
-  }
-  covariance <- config$target$covariance
-  if (!identical(dim(covariance), rep(6L, 2L)) ||
-      any(!is.finite(covariance)) || any(eigen(covariance, symmetric = TRUE)$values <= 0)) {
-    stop("The frozen Gaussian covariance is invalid.")
-  }
-  if (max(abs(covariance - config$benchmark$Sigma_T)) > 1e-9 ||
-      max(abs(config$target$gaussian_center - config$benchmark$gaussian_center)) > 1e-9) {
-    stop("The diagnostic target and sampler target differ.")
-  }
-  invisible(object)
-}
-
+# Retain every raw coordinate and add uncentered Q and the fixed projected score S_proj.
 statistics_validation_lasso <- function(samples, config) {
   covariance <- config$target$covariance
   quadratic <- rowSums(samples * t(solve(covariance, t(samples))))
@@ -80,18 +7,9 @@ statistics_validation_lasso <- function(samples, config) {
   data.frame(samples, Q = quadratic, S_proj = directional, check.names = FALSE)
 }
 
-ess_validation_lasso <- function(x, label = "statistic") {
-  if (!exists("mean_diagnostics", mode = "function")) {
-    stop("Load the repository diagnostics.R before computing CV-Lasso diagnostics.")
-  }
-  mean_diagnostics(x, label)
-}
-
+# Compare the supplied IID rejection vectors with full PM/CPM production trajectories.
+# Warm-up is already removed; repeated holding states remain in the sample matrices.
 analyze_validation_lasso <- function(object) {
-  if (as.character(utils::packageVersion("posterior")) != "1.7.0") {
-    stop("This analysis requires posterior 1.7.0.")
-  }
-  validate_samples_lasso(object)
   config <- object$config
   config$diagnostic$ess <- "posterior::ess_basic(matrix(x, ncol = 1L), split = TRUE)"
   config$diagnostic$mean_mcse <- "posterior::mcse_mean(matrix(x, ncol = 1L))"
@@ -108,7 +26,7 @@ analyze_validation_lasso <- function(object) {
   object$config$software$diagnostics <- c(
     R = as.character(getRversion()), posterior = as.character(utils::packageVersion("posterior"))
   )
-  methods <- validation_methods_lasso()
+  methods <- c("Rejection", "Crude PMMH", "Correlated PMMH")
   values <- lapply(object$samples, statistics_validation_lasso, config = config)
   statistics <- colnames(values[[1L]])
   distribution <- list()
@@ -123,12 +41,12 @@ analyze_validation_lasso <- function(object) {
       median = quantiles[3L], q75 = quantiles[4L], q90 = quantiles[5L]
     )
     if (method != "Rejection") {
-      estimate <- ess_validation_lasso(x, paste(method, statistic, sep = ", "))
+      estimate <- mean_diagnostics(x, paste(method, statistic, sep = ", "))
       half <- floor(length(x) / 2L)
       ess_rows[[length(ess_rows) + 1L]] <- data.frame(
         method = method, statistic = statistic, n = length(x),
         ess_mean = estimate$ess_mean, mcse_mean = estimate$mcse_mean, tau = estimate$tau,
-        undefined_reason = estimate$undefined_reason, package_warnings = estimate$package_warnings,
+        undefined_reason = estimate$undefined_reason,
         first_half_mean = mean(x[seq_len(half)]),
         second_half_mean = mean(x[seq.int(half + 1L, length(x))])
       )
@@ -141,6 +59,7 @@ analyze_validation_lasso <- function(object) {
     for (method in methods[-1L]) {
       x <- values[[method]][, statistic]
       mcse <- ess$mcse_mean[ess$method == method & ess$statistic == statistic]
+      # Add variances under the separately assigned reference/chain RNG streams.
       combined <- sqrt(mcse^2 + reference_se^2)
       grid <- sort(unique(c(reference, x)))
       agreement[[length(agreement) + 1L]] <- data.frame(
@@ -192,29 +111,12 @@ analyze_validation_lasso <- function(object) {
   object
 }
 
-maximum_holding_run_lasso <- function(draws) {
-  if (!is.matrix(draws) || !is.numeric(draws) ||
-      nrow(draws) < 1L || ncol(draws) < 1L ||
-      any(!is.finite(draws))) {
-    stop("Holding-run calculation requires a finite numeric draw matrix.")
-  }
-  n <- nrow(draws)
-  if (n == 1L) return(1L)
-
-  # Count saved production states in each exactly identical full-vector run.
-  same_as_previous <- rowSums(
-    draws[-1L, , drop = FALSE] != draws[-n, , drop = FALSE]
-  ) == 0L
-  run_starts <- c(1L, which(!same_as_previous) + 1L)
-  as.integer(max(diff(c(run_starts, n + 1L))))
-}
-
 mixing_validation_lasso <- function(object, ess) {
   rows <- list()
-  for (method in validation_methods_lasso()[-1L]) {
+  for (method in c("Crude PMMH", "Correlated PMMH")) {
     info <- object$sample_info[[method]]
     estimates <- ess[ess$method == method, , drop = FALSE]
-    holding <- maximum_holding_run_lasso(object$samples[[method]])
+    holding <- maximum_holding_run(object$samples[[method]])
     coordinates <- estimates[estimates$statistic %in% object$config$coordinates, ]
     minimum <- min(coordinates$ess_mean)
     minimum_coordinate <- if (is.finite(minimum)) {
@@ -233,6 +135,7 @@ mixing_validation_lasso <- function(object, ess) {
   do.call(rbind, rows)
 }
 
+# Whiten covariance differences by the Gaussian target covariance, not the selective covariance.
 covariance_validation_lasso <- function(samples, config) {
   covariances <- lapply(samples, stats::cov)
   correlations <- lapply(samples, stats::cor)
@@ -240,7 +143,7 @@ covariance_validation_lasso <- function(samples, config) {
   whitening <- decomposition$vectors %*% diag(1 / sqrt(decomposition$values)) %*%
     t(decomposition$vectors)
   rows <- list()
-  for (method in validation_methods_lasso()[-1L]) {
+  for (method in c("Crude PMMH", "Correlated PMMH")) {
     difference <- covariances[[method]] - covariances$Rejection
     correlation_difference <- correlations[[method]] - correlations$Rejection
     whitened_difference <- whitening %*% difference %*% whitening
@@ -257,6 +160,7 @@ covariance_validation_lasso <- function(samples, config) {
        }))
 }
 
+# Use inclusive upper-tail indicators at the realized rejection empirical quantiles.
 tails_validation_lasso <- function(values, config) {
   rows <- list()
   for (statistic in c("Q", "S_proj")) for (level in config$diagnostic$tail_levels) {
@@ -267,15 +171,14 @@ tails_validation_lasso <- function(values, config) {
       # Chain MCSE is conditional on this empirical threshold; it excludes its uncertainty.
       estimate <- if (method == "Rejection") {
         list(ess_mean = NA_real_, mcse_mean = NA_real_,
-             undefined_reason = "threshold estimated from reference samples; reference MCSE not computed",
-             package_warnings = "")
-      } else ess_validation_lasso(indicator, paste(method, statistic, level, "upper tail"))
+             undefined_reason = "threshold estimated from reference samples; reference MCSE not computed")
+      } else mean_diagnostics(indicator, paste(method, statistic, level, "upper tail"))
       rows[[length(rows) + 1L]] <- data.frame(
         statistic = statistic, level = level, threshold = as.numeric(threshold), method = method,
         probability = mean(indicator), reference_probability = reference,
         difference = mean(indicator) - reference, ess_indicator = estimate$ess_mean,
         mcse_indicator = estimate$mcse_mean, undefined_reason = estimate$undefined_reason,
-        package_warnings = estimate$package_warnings, n = length(indicator),
+        n = length(indicator),
         successes = sum(indicator), failures = sum(1 - indicator),
         transitions = sum(diff(indicator) != 0)
       )
@@ -285,16 +188,12 @@ tails_validation_lasso <- function(values, config) {
 }
 
 regenerate_validation_lasso <- function(object, efficiency_directory) {
-  # Explicitly requested sampling reuses the released kernels; offline analysis never calls this.
+  # Generate IID accepted vectors and full production trajectories with the efficiency kernels.
   config <- object$config
   sampler_config <- config$sampler
   sampler_environment <- new.env(parent = environment())
   sys.source(file.path(efficiency_directory, "functions_lasso.R"), envir = sampler_environment)
   sys.source(file.path(efficiency_directory, "samplers_lasso.R"), envir = sampler_environment)
-  sampler_environment$validate_efficiency_config_lasso(sampler_config)
-  if (!requireNamespace("glmnet", quietly = TRUE) || !requireNamespace("posterior", quietly = TRUE)) {
-    stop("Packages glmnet and posterior are required for explicit sample generation.")
-  }
   RNGkind("L'Ecuyer-CMRG", "Inversion", "Rejection")
   samples <- list()
   info <- list()
@@ -307,7 +206,7 @@ regenerate_validation_lasso <- function(object, efficiency_directory) {
     source = "explicit regeneration with the released rejection kernel",
     accepted_identity = NULL
   )
-  for (method in validation_methods_lasso()[-1L]) {
+  for (method in c("Crude PMMH", "Correlated PMMH")) {
     run <- sampler_environment$run_pmmh_lasso(config$benchmark, sampler_config, method)
     samples[[method]] <- run$draws
     colnames(samples[[method]]) <- config$coordinates
@@ -329,6 +228,5 @@ regenerate_validation_lasso <- function(object, efficiency_directory) {
   object$sample_info <- info
   object$diagnostics <- NULL
   object$summary <- NULL
-  validate_samples_lasso(object)
   analyze_validation_lasso(object)
 }

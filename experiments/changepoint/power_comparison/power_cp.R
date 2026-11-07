@@ -6,32 +6,26 @@ script_file <- if (sys.nframe() > 0L) {
 } else {
   sub("^--file=", "", grep("^--file=", commandArgs(FALSE), value = TRUE)[1L])
 }
-script_directory <- dirname(normalizePath(script_file, winslash = "/", mustWork = TRUE))
+script_directory <- dirname(script_file)
 
 main <- function() {
-  options(stringsAsFactors = FALSE)
-
-  source(file.path(script_directory, "../inference_null/functions_null_cp.R"), local = TRUE)
-  source(file.path(script_directory, "../inference_null/samplers_null_cp.R"), local = TRUE)
+  source(file.path(script_directory, "../global_null_calibration/functions_calibration_cp.R"), local = TRUE)
+  source(file.path(script_directory, "../global_null_calibration/samplers_calibration_cp.R"), local = TRUE)
   source(file.path(script_directory, "../../../diagnostics.R"), local = TRUE)
-  require_diagnostic_version()
 
-  source(file.path(script_directory, "functions_nonnull_cp.R"), local = TRUE)
-  source(file.path(script_directory, "samplers_nonnull_cp.R"), local = TRUE)
+  source(file.path(script_directory, "functions_power_cp.R"), local = TRUE)
+  source(file.path(script_directory, "samplers_power_cp.R"), local = TRUE)
 
-  # Select an output and a frozen or user-supplied bank.
   args <- commandArgs(trailingOnly = TRUE)
-  if (length(args) > 2L) stop("Usage: Rscript inference_nonnull_cp.R [output.rds] [bank.rds]")
-  output_path <- if (length(args)) args[[1L]] else "rerun_inference_nonnull_cp.rds"
+  if (length(args) > 2L) stop("Usage: Rscript power_cp.R [output.rds] [bank.rds]")
+  output_path <- if (length(args)) args[[1L]] else "rerun_power_cp.rds"
   if (file.exists(output_path) || dir.exists(output_path)) stop("Output already exists: ", output_path)
 
   # All model settings and task streams come from this bank.
-  bank_path <- if (length(args) >= 2L) args[[2L]] else file.path(script_directory, "inference_nonnull_cp.rds")
-  if (!file.exists(bank_path)) stop("Data bank not found: ", bank_path)
+  bank_path <- if (length(args) >= 2L) args[[2L]] else file.path(script_directory, "power_cp.rds")
   input <- readRDS(bank_path)
   bank <- input[c("config", "datasets", "rng_assignments")]
   if (!is.null(input$raw_attempts)) bank$raw_attempts <- input$raw_attempts
-  validate_bank_nonnull_cp(bank)
   config <- bank$config
   datasets <- bank$datasets
   assignments <- bank$rng_assignments
@@ -68,7 +62,6 @@ main <- function() {
   }
   offline_output <- collect_inference_output(rows)
   data <- do.call(rbind, rows)
-  # Restore paired signal/dataset/method order, then summarize.
   data <- data[
     order(
       match(data$delta, config$delta_grid),
@@ -86,7 +79,6 @@ main <- function() {
       summary = summarize_nonnull_cp(data, config)
     )
   )
-  validate_result_nonnull_cp(result)
   result <- c(result, offline_output)
   saveRDS(result, output_path, version = 3)
   message("Saved results to ", normalizePath(output_path, winslash = "/"))

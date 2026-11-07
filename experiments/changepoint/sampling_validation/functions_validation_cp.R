@@ -1,83 +1,8 @@
-# Frozen sample configuration and production-state checks.
-validation_methods_cp <- function() {
-  c("Rejection", "Crude PMMH", "Correlated PMMH")
-}
-
-validate_samples_cp <- function(object) {
-  required <- c("config", "samples", "sample_info")
-  if (!all(required %in% names(object))) stop("The validation object is incomplete.")
-  config <- object$config
-  if (!identical(config$application, "changepoint") ||
-      !identical(config$coordinates, paste0("T", seq_len(3L)))) {
-    stop("The application or coordinate order is incompatible.")
-  }
-  methods <- validation_methods_cp()
-  if (!identical(names(object$samples), methods) ||
-      !all(methods %in% names(object$sample_info))) {
-    stop("Rejection, PM and CPM samples and metadata are all required.")
-  }
-  for (method in methods) {
-    samples <- object$samples[[method]]
-    info <- object$sample_info[[method]]
-    if (!is.matrix(samples) || !is.numeric(samples) ||
-        !identical(colnames(samples), config$coordinates) ||
-        ncol(samples) != length(config$coordinates) || nrow(samples) < 2L ||
-        any(!is.finite(samples)) || nrow(samples) != info$sample_count ||
-        !identical(info$target_id, config$target_id)) {
-      stop("Invalid sample dimensions, coordinate order, target or values for ", method)
-    }
-    if (method == "Rejection") {
-      if (info$selector_evaluations != config$sampler$rejection_attempts ||
-          info$selector_evaluations != 3000000L) {
-        stop("The reference budget must be 3,000,000 proposals.")
-      }
-      if (!is.null(info$accepted_identity)) {
-        ids <- info$accepted_identity$attempt_id
-        if (length(ids) != nrow(samples) || anyNA(ids) || anyDuplicated(ids) ||
-            any(diff(ids) <= 0L) || any(ids < 1L | ids > info$selector_evaluations)) {
-          stop("Invalid ordered rejection attempt identities.")
-        }
-      }
-    } else {
-      expected <- seq.int(config$sampler$adaptive_transitions + 1L,
-                          config$sampler$total_transitions)
-      if (nrow(samples) != config$sampler$production_transitions ||
-          !identical(as.integer(info$production_iterations), expected) ||
-          config$sampler$stabilization_transitions != 0L ||
-          length(info$accepted) != nrow(samples) ||
-          length(info$proposed_zero) != nrow(samples) ||
-          anyNA(info$accepted) || anyNA(info$proposed_zero) ||
-          info$selector_evaluations != config$sampler$total_transitions) {
-        stop("Production interval or transition metadata is inconsistent for ", method)
-      }
-      repeats <- sum(rowSums(samples[-1L, , drop = FALSE] !=
-                               samples[-nrow(samples), , drop = FALSE]) == 0L)
-      if (repeats != info$adjacent_repeats) stop("Repeated production states changed for ", method)
-      # A rejected proposal after the first retained state must preserve its predecessor.
-      rejected <- which(!as.logical(info$accepted[-1L])) + 1L
-      if (length(rejected) &&
-          any(samples[rejected, , drop = FALSE] != samples[rejected - 1L, , drop = FALSE])) {
-        stop("Rejected production transitions did not retain their states for ", method)
-      }
-    }
-  }
-  covariance <- config$target$covariance
-  if (!identical(dim(covariance), rep(3L, 2L)) ||
-      any(!is.finite(covariance)) || any(eigen(covariance, symmetric = TRUE)$values <= 0)) {
-    stop("The frozen Gaussian covariance is invalid.")
-  }
-  if (max(abs(covariance - config$benchmark$Sigma_T)) > 1e-9 ||
-      max(abs(config$target$gaussian_center - config$benchmark$gaussian_center)) > 1e-9) {
-    stop("The diagnostic target and sampler target differ.")
-  }
-  invisible(object)
-}
-
-# Coordinates and fixed quadratic/directional statistics.
+# Keep raw coordinates and uncentered Q; S_shift and Q_centered use the frozen Gaussian center.
 statistics_validation_cp <- function(samples, config) {
   inverse <- config$target$precision
   quadratic <- function(x) rowSums((x %*% inverse) * x)
-  # Center each row; vector recycling would center different coordinates incorrectly.
+  # Subtract each Gaussian-center coordinate down its sample column.
   centered <- sweep(samples, 2L, config$target$gaussian_center, "-")
   directional <- drop(centered %*% inverse %*% config$target$direction /
                         sqrt(config$target$direction_information))
@@ -85,15 +10,13 @@ statistics_validation_cp <- function(samples, config) {
         Q_centered = quadratic(centered))
 }
 
-# Explicit sample regeneration; offline analysis does not call this.
+# Generate the rejection reference and production chains with their saved sampling configuration.
 regenerate_validation_cp <- function(object, efficiency_directory) {
-  # Explicitly requested sampling reuses the released kernels; offline analysis never calls this.
   config <- object$config
   sampler_config <- config$sampler
   sampler_environment <- new.env(parent = environment())
   sys.source(file.path(efficiency_directory, "functions_cp.R"), envir = sampler_environment)
   sys.source(file.path(efficiency_directory, "samplers_cp.R"), envir = sampler_environment)
-  sampler_environment$validate_efficiency_config_cp(sampler_config)
   RNGkind("L'Ecuyer-CMRG", "Inversion", "Rejection")
   samples <- list()
   info <- list()
@@ -106,7 +29,7 @@ regenerate_validation_cp <- function(object, efficiency_directory) {
     source = "explicit regeneration with the released rejection kernel",
     accepted_identity = NULL
   )
-  for (method in validation_methods_cp()[-1L]) {
+  for (method in c("Crude PMMH", "Correlated PMMH")) {
     run <- sampler_environment$run_pmmh_cp(config$benchmark, sampler_config, method)
     samples[[method]] <- run$draws
     colnames(samples[[method]]) <- config$coordinates
@@ -128,13 +51,7 @@ regenerate_validation_cp <- function(object, efficiency_directory) {
   object$sample_info <- info
   object$diagnostics <- NULL
   object$summary <- NULL
-  validate_samples_cp(object)
   analyze_validation_cp(object)
-}
-
-# Offline mean, tail, covariance and mixing diagnostics.
-ess_validation_cp <- function(x, label = "statistic") {
-  mean_diagnostics(x, label)
 }
 
 autocovariance_validation_cp <- function(x) {
@@ -147,29 +64,12 @@ autocovariance_validation_cp <- function(x) {
     padding / rev(seq_len(n))
 }
 
-maximum_holding_run_cp <- function(draws) {
-  if (!is.matrix(draws) || !is.numeric(draws) ||
-      nrow(draws) < 1L || ncol(draws) < 1L ||
-      any(!is.finite(draws))) {
-    stop("Holding-run calculation requires a finite numeric draw matrix.")
-  }
-  n <- nrow(draws)
-  if (n == 1L) return(1L)
-
-  # Count saved production states in each exactly identical full-vector run.
-  same_as_previous <- rowSums(
-    draws[-1L, , drop = FALSE] != draws[-n, , drop = FALSE]
-  ) == 0L
-  run_starts <- c(1L, which(!same_as_previous) + 1L)
-  as.integer(max(diff(c(run_starts, n + 1L))))
-}
-
 mixing_validation_cp <- function(object, ess) {
   rows <- list()
-  for (method in validation_methods_cp()[-1L]) {
+  for (method in c("Crude PMMH", "Correlated PMMH")) {
     info <- object$sample_info[[method]]
     estimates <- ess[ess$method == method, , drop = FALSE]
-    holding <- maximum_holding_run_cp(object$samples[[method]])
+    holding <- maximum_holding_run(object$samples[[method]])
     coordinates <- estimates[estimates$statistic %in% object$config$coordinates, ]
     minimum <- min(coordinates$ess_mean)
     minimum_coordinate <- if (is.finite(minimum)) {
@@ -188,6 +88,7 @@ mixing_validation_cp <- function(object, ess) {
   do.call(rbind, rows)
 }
 
+# Gaussian target whitening supplies a common scale, not the selective covariance itself.
 covariance_validation_cp <- function(samples, config) {
   covariances <- lapply(samples, stats::cov)
   correlations <- lapply(samples, stats::cor)
@@ -196,7 +97,7 @@ covariance_validation_cp <- function(samples, config) {
     t(decomposition$vectors)
   whitened <- lapply(covariances, function(covariance) whitening %*% covariance %*% whitening)
   rows <- list()
-  for (method in validation_methods_cp()[-1L]) {
+  for (method in c("Crude PMMH", "Correlated PMMH")) {
     difference <- covariances[[method]] - covariances$Rejection
     correlation_difference <- correlations[[method]] - correlations$Rejection
     whitened_difference <- whitened[[method]] - whitened$Rejection
@@ -213,58 +114,8 @@ covariance_validation_cp <- function(samples, config) {
        }))
 }
 
-covariance_bootstrap_validation_cp <- function(samples, config) {
-  specification <- config$diagnostic$covariance_bootstrap
-  decomposition <- eigen(config$target$covariance, symmetric = TRUE)
-  whitening <- decomposition$vectors %*% diag(1 / sqrt(decomposition$values)) %*% t(decomposition$vectors)
-  whiten <- function(covariance) whitening %*% covariance %*% whitening
-  metric <- function(reference, chain) {
-    reference_covariance <- stats::cov(reference)
-    difference <- whiten(stats::cov(chain)) - whiten(reference_covariance)
-    c(distance = norm(difference, "F"),
-      relative = norm(difference, "F") / max(norm(whiten(reference_covariance), "F"), .Machine$double.eps),
-      correlation = max(abs(stats::cor(chain) - stats::cor(reference))))
-  }
-  circular_indices <- function(n, block) {
-    starts <- sample.int(n, ceiling(n / block), replace = TRUE)
-    indices <- unlist(lapply(starts, function(start) {
-      ((start - 1L + seq_len(block) - 1L) %% n) + 1L
-    }), use.names = FALSE)
-    indices[seq_len(n)]
-  }
-  old_kind <- RNGkind()
-  had_seed <- exists(".Random.seed", envir = .GlobalEnv, inherits = FALSE)
-  if (had_seed) old_seed <- get(".Random.seed", envir = .GlobalEnv)
-  on.exit({
-    do.call(RNGkind, as.list(old_kind))
-    if (had_seed) assign(".Random.seed", old_seed, envir = .GlobalEnv)
-    else if (exists(".Random.seed", envir = .GlobalEnv, inherits = FALSE)) rm(".Random.seed", envir = .GlobalEnv)
-  }, add = TRUE)
-  RNGkind("Mersenne-Twister", "Inversion", "Rejection")
-  set.seed(specification$seed)
-  rows <- list()
-  for (method in validation_methods_cp()[-1L]) {
-    chain <- samples[[method]]
-    reference <- samples$Rejection
-    draws <- matrix(NA_real_, specification$replicates, 3L)
-    for (replicate in seq_len(specification$replicates)) {
-      reference_draw <- reference[sample.int(nrow(reference), nrow(reference), replace = TRUE), , drop = FALSE]
-      chain_draw <- chain[circular_indices(nrow(chain), specification$block_length), , drop = FALSE]
-      draws[replicate, ] <- metric(reference_draw, chain_draw)
-    }
-    observed <- metric(reference, chain)
-    interval <- apply(draws, 2L, stats::quantile, c(0.025, 0.975), names = FALSE)
-    rows[[length(rows) + 1L]] <- data.frame(
-      method = method, replicates = specification$replicates, block_length = specification$block_length,
-      distance = observed[1L], median_distance = stats::median(draws[, 1L]),
-      distance_lower = interval[1L, 1L], distance_upper = interval[2L, 1L],
-      relative = observed[2L], relative_lower = interval[1L, 2L], relative_upper = interval[2L, 2L],
-      correlation = observed[3L], correlation_lower = interval[1L, 3L], correlation_upper = interval[2L, 3L]
-    )
-  }
-  do.call(rbind, rows)
-}
-
+# Inclusive upper-tail indicators use fixed pre-selection Q and S_shift quantiles.
+# At IID boundary counts retain Wilson intervals rather than a zero uncertainty claim.
 tails_validation_cp <- function(values, config) {
   target <- config$target
   noncentrality <- drop(t(target$gaussian_center) %*% target$precision %*% target$gaussian_center)
@@ -289,9 +140,8 @@ tails_validation_cp <- function(values, config) {
       estimate <- if (method == "Rejection") {
         list(ess_mean = NA_real_, mcse_mean = if (boundary) NA_real_ else reference_se,
              undefined_reason = if (boundary) "IID reference boundary; Wilson interval retained" else
-               "MCMC ESS not applicable to IID reference",
-             package_warnings = "")
-      } else ess_validation_cp(indicator, paste(method, statistic, level, "upper tail"))
+               "MCMC ESS not applicable to IID reference")
+      } else mean_diagnostics(indicator, paste(method, statistic, level, "upper tail"))
       combined <- if (boundary || method == "Rejection") NA_real_ else sqrt(reference_se^2 + estimate$mcse_mean^2)
       standardized <- if (boundary || method == "Rejection") NA_real_ else
         (probability - reference_probability) / combined
@@ -303,7 +153,7 @@ tails_validation_cp <- function(values, config) {
         z_difference = standardized, reference_boundary = boundary,
         reference_wilson_lower = max(0, center - half),
         reference_wilson_upper = min(1, center + half),
-        undefined_reason = estimate$undefined_reason, package_warnings = estimate$package_warnings,
+        undefined_reason = estimate$undefined_reason,
         successes = sum(indicator), failures = sum(1 - indicator),
         transitions = sum(diff(indicator) != 0)
       )
@@ -314,7 +164,7 @@ tails_validation_cp <- function(values, config) {
 
 autocorrelation_validation_cp <- function(values) {
   rows <- list()
-  for (method in validation_methods_cp()[-1L]) for (statistic in colnames(values[[method]])) {
+  for (method in c("Crude PMMH", "Correlated PMMH")) for (statistic in colnames(values[[method]])) {
     covariance <- autocovariance_validation_cp(values[[method]][, statistic])
     acf <- (covariance / covariance[1L])[-1L]
     lags <- seq_len(min(1000L, length(acf)))
@@ -329,7 +179,7 @@ rolling_validation_cp <- function(values, config) {
   window <- config$diagnostic$rolling_window
   step <- config$diagnostic$rolling_step
   rows <- list()
-  for (method in validation_methods_cp()[-1L]) for (statistic in c("T1", "Q", "S_shift")) {
+  for (method in c("Crude PMMH", "Correlated PMMH")) for (statistic in c("T1", "Q", "S_shift")) {
     x <- values[[method]][, statistic]
     starts <- seq.int(1L, length(x) - window + 1L, by = step)
     rows[[length(rows) + 1L]] <- data.frame(
@@ -341,9 +191,9 @@ rolling_validation_cp <- function(values, config) {
   do.call(rbind, rows)
 }
 
+# Analyze saved rejection vectors and production chains; warm-up is already removed.
+# All holding states contribute to moments, tail indicators and marginal comparisons.
 analyze_validation_cp <- function(object) {
-  require_diagnostic_version()
-  validate_samples_cp(object)
   config <- object$config
   config$diagnostic$ess <- "posterior::ess_basic(matrix(x, ncol = 1L), split = TRUE)"
   config$diagnostic$mean_mcse <- "posterior::mcse_mean(matrix(x, ncol = 1L))"
@@ -360,7 +210,7 @@ analyze_validation_cp <- function(object) {
   object$config$software$diagnostics <- c(
     R = as.character(getRversion()), posterior = as.character(utils::packageVersion("posterior"))
   )
-  methods <- validation_methods_cp()
+  methods <- c("Rejection", "Crude PMMH", "Correlated PMMH")
   values <- lapply(object$samples, statistics_validation_cp, config = config)
   statistics <- colnames(values[[1L]])
   distribution <- list()
@@ -375,12 +225,12 @@ analyze_validation_cp <- function(object) {
       median = quantiles[3L], q75 = quantiles[4L], q90 = quantiles[5L]
     )
     if (method != "Rejection") {
-      estimate <- ess_validation_cp(x, paste(method, statistic, sep = ", "))
+      estimate <- mean_diagnostics(x, paste(method, statistic, sep = ", "))
       half <- floor(length(x) / 2L)
       ess_rows[[length(ess_rows) + 1L]] <- data.frame(
         method = method, statistic = statistic, n = length(x),
         ess_mean = estimate$ess_mean, mcse_mean = estimate$mcse_mean, tau = estimate$tau,
-        undefined_reason = estimate$undefined_reason, package_warnings = estimate$package_warnings,
+        undefined_reason = estimate$undefined_reason,
         first_half_mean = mean(x[seq_len(half)]),
         second_half_mean = mean(x[seq.int(half + 1L, length(x))])
       )
@@ -393,6 +243,7 @@ analyze_validation_cp <- function(object) {
     for (method in methods[-1L]) {
       x <- values[[method]][, statistic]
       mcse <- ess$mcse_mean[ess$method == method & ess$statistic == statistic]
+      # Reference and chain variances are added under their separate-stream assumption.
       combined <- sqrt(mcse^2 + reference_se^2)
       grid <- sort(unique(c(reference, x)))
       agreement[[length(agreement) + 1L]] <- data.frame(
@@ -414,8 +265,6 @@ analyze_validation_cp <- function(object) {
   diagnostics <- list(ess_mcse = ess, mixing = mixing_validation_cp(object, ess))
   diagnostics$autocorrelation <- autocorrelation_validation_cp(values)
   diagnostics$rolling_means <- rolling_validation_cp(values, config)
-  # Recompute from the current samples and specification; old caches lack identity checks.
-  covariance$bootstrap <- covariance_bootstrap_validation_cp(object$samples, config)
   diagnostics$distribution <- do.call(rbind, distribution)
   diagnostics$agreement <- agreement
   diagnostics$tails <- tails

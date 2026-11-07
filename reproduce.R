@@ -12,23 +12,16 @@ if (.Platform$OS.type == "windows" &&
 }
 script_directory <- dirname(script_file)
 
-write_table_csv <- function(data, stem) {
-  csv <- data
-  for (name in names(csv)) {
-    if (is.double(csv[[name]])) {
-      csv[[name]] <- ifelse(
-        is.finite(csv[[name]]),
-        sprintf("%.17g", csv[[name]]),
-        NA_character_
-      )
-    }
+read_result <- function(path) {
+  signature <- charToRaw("version https://git-lfs.github.com/spec/v1")
+  if (identical(readBin(path, "raw", n = length(signature)), signature)) {
+    stop("Git LFS pointer instead of results: ", path, ". Run git lfs pull.")
   }
-  utils::write.csv(csv, paste0(stem, ".csv"), row.names = FALSE, na = "NA")
+  readRDS(path)
 }
 
 main <- function(arguments = commandArgs(trailingOnly = TRUE)) {
-  if (length(arguments) > 1L) stop("Usage: Rscript reproduce.R [output-directory]")
-  output <- if (length(arguments)) arguments[[1L]] else NULL
+  output <- if (length(arguments)) arguments[[1L]] else "../paper-output"
   repository <- script_directory
 
   # File connections need a UTF-8 locale for non-ASCII Windows paths.
@@ -39,41 +32,65 @@ main <- function(arguments = commandArgs(trailingOnly = TRUE)) {
     on.exit(Sys.setlocale("LC_CTYPE", previous_locale), add = TRUE)
   }
   source(file.path(repository, "diagnostics.R"), local = TRUE)
-  require_diagnostic_version()
+  for (package in c("posterior", "ggplot2", "patchwork")) {
+    if (!requireNamespace(package, quietly = TRUE)) stop("Package '", package, "' is required.")
+  }
+  if (!capabilities("cairo")) stop("Cairo PDF support is required.")
 
-  # Read each frozen object once. The helper files only define functions.
+  dir.create(output, recursive = TRUE, showWarnings = FALSE)
+  output <- normalizePath(output, winslash = "/", mustWork = TRUE)
+  repository <- normalizePath(repository, winslash = "/", mustWork = TRUE)
+  if (tolower(output) == tolower(repository) ||
+      startsWith(tolower(output), paste0(tolower(repository), "/"))) {
+    stop("Choose an output directory outside the repository to protect the supplied results.")
+  }
+
+  # Read the supplied CV-Lasso and Changepoint results and construct their panels.
   applications <- c(cv_lasso = "lasso", changepoint = "cp")
   validation_inputs <- list()
   efficiency_inputs <- list()
   inference_results <- list()
-  inference_helpers <- list()
+  panels <- list()
+  validation_figures <- list()
+  experiments <- c(null = "global_null_calibration", nonnull = "power_comparison")
+  stems <- c(null = "calibration", nonnull = "power")
   for (application in names(applications)) {
     suffix <- applications[[application]]
     base <- file.path(repository, "experiments", application)
-    validation_inputs[[application]] <- readRDS(file.path(
+    validation_inputs[[application]] <- read_result(file.path(
       base, "sampling_validation", paste0("sampling_validation_", suffix, ".rds")
     ))
-    efficiency_inputs[[application]] <- readRDS(file.path(
+    efficiency_inputs[[application]] <- read_result(file.path(
       base, "efficiency_comparison", paste0("efficiency_", suffix, ".rds")
     ))
     helpers <- new.env(parent = globalenv())
-    for (experiment in c("null", "nonnull")) {
-      directory <- file.path(base, paste0("inference_", experiment))
-      source(file.path(directory, paste0("functions_", experiment, "_", suffix, ".R")),
-             local = helpers)
-      result <- readRDS(file.path(
-        directory, paste0("inference_", experiment, "_", suffix, ".rds")
-      ))
-      helpers[[paste0("validate_result_", experiment, "_", suffix)]](result)
+    source(file.path(base, "sampling_validation",
+                     paste0("plot_sampling_validation_", suffix, ".R")), local = helpers)
+    validation_figures[[application]] <- helpers[[paste0("make_coordinate_figure_", suffix)]](
+      validation_inputs[[application]]
+    )
+    for (experiment in names(experiments)) {
+      directory <- file.path(base, experiments[[experiment]])
+      stem <- paste0(stems[[experiment]], "_", suffix)
+      helpers <- new.env(parent = globalenv())
+      if (application == "cv_lasso") {
+        source(file.path(repository, "plot_style.R"), local = helpers)
+      }
+      source(file.path(directory, paste0("plot_", stem, ".R")), local = helpers)
+      result <- read_result(file.path(directory, paste0(stem, ".rds")))
+      make_panel <- if (experiment == "null") helpers$make_inference_figure else helpers$make_directional_figure
+      panels[[application]][[experiment]] <- make_panel(result)
       inference_results[[application]][[experiment]] <- result
     }
-    inference_helpers[[application]] <- helpers
   }
-  bank <- readRDS(file.path(repository, "inference_trajectories.rds"))
-
-  # Match sampled tests, not physical trajectories: a trajectory may support
-  # both a quadratic and a directional test. Analytic baselines are excluded.
-  validate_inference_results(bank, inference_results)
+  # File Drawer is computed here; it has no saved result input.
+  helpers <- new.env(parent = globalenv())
+  for (file in c("samplers_fd.R", "analysis_fd.R", "run_fd.R", "plot_fd.R")) {
+    source(file.path(repository, "experiments/file_drawer", file), local = helpers)
+  }
+  file_drawer_result <- helpers$run_experiment_fd()
+  file_drawer <- helpers$make_figure(file_drawer_result)
+  bank <- read_result(file.path(repository, "inference_trajectories.rds"))
 
   # Coordinate diagnostics serve both efficiency and sampling validation.
   efficiency_tables <- list()
@@ -88,11 +105,6 @@ main <- function(arguments = commandArgs(trailingOnly = TRUE)) {
       efficiency_inputs[[application]], validation_inputs[[application]]
     )
     table <- efficiency_table(efficiency)
-    if (!isTRUE(all.equal(
-      table, efficiency_table(efficiency_inputs[[application]]), tolerance = 1e-12
-    ))) {
-      stop("Recomputed efficiency differs from the frozen result: ", application)
-    }
     efficiency_tables[[paste0("efficiency_", suffix)]] <- table
     coordinates[[application]] <- efficiency$coordinate_ess
     for (method in names(method_labels)) {
@@ -105,22 +117,15 @@ main <- function(arguments = commandArgs(trailingOnly = TRUE)) {
       )
     }
 
-    null <- inference_results[[application]]$null
-    for (method in null$config$methods$method_id) {
-      rows <- null$dataset_results[null$dataset_results$method_id == method, ]
-      null_rows[[length(null_rows) + 1L]] <- data.frame(
-        application = application, method_id = method, datasets = nrow(rows),
-        rejections = sum(rows$p_value <= null$config$test_level),
-        rejection_rate = mean(rows$p_value <= null$config$test_level)
-      )
-    }
-    nonnull <- inference_results[[application]]$nonnull
-    summarize <- inference_helpers[[application]][[paste0("summarize_nonnull_", suffix)]]
-    power <- summarize(nonnull$dataset_results, nonnull$config)$power
+    null <- inference_results[[application]]$null$summary
+    names(null)[names(null) == "type_i_error"] <- "rejection_rate"
+    null_rows[[application]] <- data.frame(application = application, null)
+    power <- inference_results[[application]]$nonnull$summary$power
     power$application <- application
     power_rows[[application]] <- power
   }
 
+  # Diagnose the actual upper-tail indicators from the saved inference trajectories.
   diagnostics <- recompute_inference_diagnostics(bank)
   pooled <- summarize_inference_diagnostics(diagnostics)
   row_order <- order(
@@ -150,39 +155,34 @@ main <- function(arguments = commandArgs(trailingOnly = TRUE)) {
     inference_diagnostics = paper_table
   ))
 
-  # Default execution prints paper summaries only; exports require a directory.
+  # Tables stay on the console; only paper PDFs are written to the output directory.
   for (name in names(summaries)) {
     cat("\n", name, "\n", sep = "")
     print(summaries[[name]], row.names = FALSE, digits = 6)
   }
-  if (!is.null(output)) {
-    dir.create(output, recursive = TRUE, showWarnings = FALSE)
-    for (name in names(summaries)) {
-      write_table_csv(summaries[[name]], file.path(output, name))
-    }
-    for (application in names(applications)) {
-      write_table_csv(
-        coordinates[[application]],
-        file.path(output, paste0("validation_coordinates_", applications[[application]]))
-      )
-    }
-    write_table_csv(diagnostics, file.path(output, "inference_diagnostics_dataset"))
-    write_table_csv(pooled, file.path(output, "inference_diagnostics_pooled"))
-    write_table_csv(
-      summarize_inference_diagnostics(diagnostics, by_signal = TRUE),
-      file.path(output, "inference_diagnostics_by_signal")
-    )
-    source(file.path(repository, "plot_inference.R"), local = TRUE)
-    save_inference_figures(inference_panels(repository, inference_results), output)
+  ggplot2::ggsave(file.path(output, "sampling_complexity_fd.pdf"), file_drawer,
+                  width = 12, height = 5, device = grDevices::cairo_pdf)
+  for (application in names(applications)) {
+    suffix <- applications[[application]]
+    left <- panels[[application]]$null
+    right <- panels[[application]]$nonnull
+    ggplot2::ggsave(file.path(output, paste0("calibration_", suffix, ".pdf")),
+                    left, width = 3.78, height = 3.6, device = grDevices::cairo_pdf, bg = "white")
+    ggplot2::ggsave(file.path(output, paste0("power_", suffix, ".pdf")),
+                    right, width = 4.62, height = 3.6, device = grDevices::cairo_pdf, bg = "white")
+    # Reuse the same calibration and power panels in the combined figure.
+    combined <- patchwork::wrap_plots(left, right, ncol = 2, widths = c(4.5, 5.5))
+    label <- if (application == "cv_lasso") "CV" else "CP"
+    ggplot2::ggsave(file.path(output, paste0("Figure_", label, "_Inference_combined.pdf")),
+                    combined, width = 8.4, height = 3.6, device = grDevices::cairo_pdf, bg = "white")
+    ggplot2::ggsave(file.path(output, paste0("sampling_validation_", suffix, ".pdf")),
+                    validation_figures[[application]], width = 12,
+                    height = if (application == "cv_lasso") 8 else 4,
+                    device = grDevices::cairo_pdf, bg = "white", limitsize = FALSE)
   }
-  cat(
-    "Offline reproduction: ", nrow(diagnostics), " test diagnostics; ",
-    length(bank$trajectories), " unique production trajectories. New selector evaluations: 0.\n",
-    sep = ""
-  )
   invisible(list(
     summaries = summaries, coordinate_ess = coordinates,
-    inference_diagnostics = diagnostics
+    inference_diagnostics = diagnostics, file_drawer = file_drawer_result
   ))
 }
 

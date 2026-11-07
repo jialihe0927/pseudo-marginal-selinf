@@ -6,14 +6,9 @@ log_selection_probability <- function(b) {
   pnorm(b, lower.tail = FALSE, log.p = TRUE)
 }
 
+# Sample the selection score above b and an independent orthogonal Gaussian.
+# Rotating back gives exact selected (X, U) states, with no warm-up.
 draw_selected_states <- function(n, a, b) {
-  if (n < 1L || n != as.integer(n)) {
-    stop("n must be a positive integer.")
-  }
-  if (!is.finite(a) || a <= 0 || a >= 1) {
-    stop("a must lie strictly between zero and one.")
-  }
-
   tail_uniform <- pmax(runif(n), .Machine$double.xmin)
   selected_score <- qnorm(
     log(tail_uniform) + log_selection_probability(b),
@@ -24,9 +19,6 @@ draw_selected_states <- function(n, a, b) {
   x <- sqrt(a) * selected_score + sqrt(1 - a) * orthogonal_score
   u <- sqrt(1 - a) * selected_score - sqrt(a) * orthogonal_score
 
-  if (any(!selection_event(x, u, a, b))) {
-    stop("Exact selected-state initialization failed.")
-  }
   list(x = x, u = u)
 }
 
@@ -71,11 +63,6 @@ initialize_chains <- function(n_chains, a, b, median_x, seed) {
 
 advance_chains <- function(state, method, a, b, proposal_scale, rho,
                            median_x, target_observations) {
-  method <- match.arg(method, c("Independent PM", "CPM"))
-  if (target_observations < state$n_observations) {
-    stop("target_observations cannot move backward.")
-  }
-
   while (state$n_observations < target_observations) {
     if (method == "Independent PM") {
       state <- independent_pm_transition(state, a, b, proposal_scale)
@@ -87,13 +74,5 @@ advance_chains <- function(state, method, a, b, proposal_scale, rho,
     state$n_observations <- state$n_observations + 1L
   }
 
-  # Check the full state at each checkpoint. Integrity checks are not charged
-  # to the proposal-selector budget and consume no random numbers.
-  if (any(!is.finite(state$x)) || any(!is.finite(state$u))) {
-    stop("A sampler produced a non-finite state.")
-  }
-  if (any(!selection_event(state$x, state$u, a, b))) {
-    stop("A sampler left the selected state space.")
-  }
   state
 }

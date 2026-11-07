@@ -1,11 +1,10 @@
+# The DGP may have a positive signal; the selective test reference remains zero-mean Gaussian.
 run_pmmh_nonnull_cp <- function(dataset, method_id, rng_state, config) {
-  if (length(method_id) != 1L || is.na(method_id) || !method_id %in% config$sampled_methods) {
-    stop("Unknown changepoint PMMH method: ", method_id)
-  }
+  # A zero projected direction has no standardized score; return p=1 without sampling.
   if (dataset$direction$structural_zero) {
     return(result_row_nonnull_cp(dataset, method_id, 1, config, result_type = "structural_zero"))
   }
-  # Delta zero uses the quadratic-null kernel with a directional score.
+  # Rerun the calibration kernel and assigned stream with a directional score.
   if (dataset$delta == 0) {
     null <- list(
       dataset_id = dataset$dataset_id,
@@ -30,13 +29,13 @@ run_pmmh_nonnull_cp <- function(dataset, method_id, rng_state, config) {
     attr(row, "indicator_diagnostics") <- attr(sampled, "indicator_diagnostics")
     return(row)
   }
-  validate_config_nonnull_cp(config)
   with_rng_nonnull_cp(function() {
     pmmh <- config$pmmh
     target <- dataset$target
     T <- as.numeric(target$T_obs)
     U <- as.numeric(dataset$W / config$randomization_sd)
-    # The lower factor gives proposal covariance (h^2/K) Sigma_T.
+    # R chol() returns an upper factor; transposing gives L L^T = Sigma_T,
+    # hence proposal covariance (h^2/K) Sigma_T.
     proposal_factor <- t(chol(target$Sigma_T))
     scale <- pmmh$scale_initial
     production <- matrix(NA_real_, pmmh$production, dataset$selected_k)
@@ -70,6 +69,7 @@ run_pmmh_nonnull_cp <- function(dataset, method_id, rng_state, config) {
       }
     }
     scores <- statistic_nonnull_cp(production, dataset$direction)
+    # Inclusive tail count / production length, without a +1 correction.
     tail_count <- sum(scores >= dataset$direction$observed)
     row <- result_row_nonnull_cp(
       dataset, method_id, tail_count / pmmh$production, config,

@@ -6,7 +6,7 @@ inference_tick_labels <- function(x) {
 
 plot_style <- list(
   base_size = 13, axis_title_size = 10, axis_text_size = 8.5,
-  legend_text_size = 11.5, bar_border_linewidth = 0.55, errorbar_linewidth = 0.85
+  bar_border_linewidth = 0.55, errorbar_linewidth = 0.85
 )
 
 theme_inference_panel <- function() {
@@ -17,15 +17,8 @@ theme_inference_panel <- function() {
       axis.line = element_line(linewidth = 0.7, color = "#3F3F3F"),
       axis.ticks = element_line(linewidth = 0.65, color = "#3F3F3F"),
       axis.ticks.length = grid::unit(4.5, "pt"),
-      legend.position = "top",
-      legend.direction = "horizontal",
       legend.box = "horizontal",
-      legend.justification = "center",
-      legend.text = element_text(size = plot_style$legend_text_size, color = "#222222"),
-      legend.key.width = grid::unit(35, "pt"),
-      legend.key.height = grid::unit(14, "pt"),
       legend.spacing.x = grid::unit(8, "pt"),
-      legend.margin = margin(0, 0, 1, 0, unit = "pt"),
       panel.grid = element_blank(),
       panel.grid.major = element_line(color = "grey88", linewidth = 0.35),
       panel.grid.minor = element_blank(),
@@ -40,7 +33,6 @@ theme_inference_panel <- function() {
     )
 }
 
-
 bar_geometry <- function(data, method_ids) {
   span <- if (length(method_ids) == 2L) 0.13 else 0.25
   offsets <- setNames(seq(-span, span, length.out = length(method_ids)), method_ids)
@@ -51,6 +43,7 @@ bar_geometry <- function(data, method_ids) {
   data
 }
 
+# Clip diagonal segments to the bar in unit coordinates before scaling to its height.
 diagonal_hatch <- function(row, spacing = 0.18) {
   constants <- seq(-1, 1, by = spacing)
   pieces <- lapply(constants, function(cc) {
@@ -106,13 +99,15 @@ legend_hatches <- function(method_id, xmin, xmax, ymin, ymax) {
   seg
 }
 
-
-make_power_figure <- function(power, legend_labels) {
-  method_ids <- c("model_only", "full_conditioning", "data_fission")
-  method_ids <- method_ids[method_ids %in% power$method_id]
+make_power_figure <- function(power) {
+  labels <- c(model_only = "Proposed", full_selector = "Proposed",
+              full_conditioning = "Extra cond.", data_fission = "Data splitting")
+  method_ids <- names(labels)[names(labels) %in% power$method_id]
+  legend_labels <- unname(labels[method_ids])
   delta_grid <- sort(unique(power$delta))
   fills <- c(
     model_only = "#4878A8",
+    full_selector = "#4878A8",
     full_conditioning = "#D8AA69",
     data_fission = "#BC6C65"
   )
@@ -151,6 +146,7 @@ make_power_figure <- function(power, legend_labels) {
     theme_inference_panel() +
     theme(legend.position = "none")
 
+  # Draw the legend with the same fills and hatches as the bars.
   two_methods <- length(method_ids) == 2L
   legend_y <- if (two_methods) c(0.7025, 0.2975) else c(0.77, 0.50, 0.23)
   half_height <- if (two_methods) 0.105 else 0.070
@@ -201,15 +197,11 @@ make_power_figure <- function(power, legend_labels) {
       plot.margin = margin(0, 0, 0, 0, unit = "pt")
     )
 
-  if (!requireNamespace("patchwork", quietly = TRUE)) stop("patchwork package is required")
-  p <- main + patchwork::inset_element(
+  main + patchwork::inset_element(
     legend_plot, left = 0.035, bottom = if (two_methods) 0.785 else 0.700,
     right = 0.400, top = 0.955,
     align_to = "panel", clip = FALSE
   )
-
-
-  p
 }
 
 theme_null_legend <- function() {

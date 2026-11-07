@@ -1,20 +1,8 @@
-script_file <- if (sys.nframe() > 0L) {
-  files <- vapply(sys.frames(), function(frame) {
-    if (is.null(frame$ofile)) "" else as.character(frame$ofile)
-  }, character(1L))
-  tail(files[nzchar(files)], 1L)
-} else {
-  sub("^--file=", "", grep("^--file=", commandArgs(FALSE), value = TRUE)[1L])
-}
-script_directory <- dirname(script_file)
-source(file.path(script_directory, "functions_validation_lasso.R"), local = TRUE)
-if (!requireNamespace("ggplot2", quietly = TRUE)) stop("Package 'ggplot2' is required.")
-if (!capabilities("cairo")) stop("Cairo PDF support is required for the paper figure.")
 suppressPackageStartupMessages(library(ggplot2))
 
+# Descriptive coordinate ECDFs compare marginals, without asserting joint agreement or convergence.
 make_coordinate_figure_lasso <- function(object) {
-  validate_samples_lasso(object)
-  methods <- validation_methods_lasso()
+  methods <- c("Rejection", "Crude PMMH", "Correlated PMMH")
   coordinates <- object$config$coordinates
   colors <- setNames(c("#4d4d4d", "#bc6c65", "#4878a8"), methods)
   shapes <- setNames(c(16L, 17L, 15L), methods)
@@ -52,7 +40,8 @@ make_coordinate_figure_lasso <- function(object) {
     xend = range[1L] + 0.105 * span,
     point_x = range[1L] + 0.075 * span,
     text_x = range[1L] + 0.125 * span,
-    y = c(0.952, 0.887, 0.822), label = c("Rejection", "PM", "CPM")
+    y = c(0.952, 0.887, 0.822),
+    label = unname(c(Rejection = "Rejection", "Crude PMMH" = "PM", "Correlated PMMH" = "CPM")[methods])
   )
   box <- data.frame(
     variable = "T1", xmin = range[1L] + 0.025 * span,
@@ -108,11 +97,11 @@ make_coordinate_figure_lasso <- function(object) {
 }
 
 main <- function(arguments = commandArgs(trailingOnly = TRUE)) {
+  if (!capabilities("cairo")) stop("Cairo PDF support is required for the paper figure.")
   if (length(arguments) > 1L) stop("Usage: Rscript plot_sampling_validation_lasso.R [input.rds]")
   input_path <- if (length(arguments)) arguments[[1L]] else {
-    file.path(script_directory, "sampling_validation_lasso.rds")
+    "sampling_validation_lasso.rds"
   }
-  if (!file.exists(input_path)) stop("Validation input not found: ", input_path)
   object <- readRDS(input_path)
   figure <- make_coordinate_figure_lasso(object)
   ggsave(

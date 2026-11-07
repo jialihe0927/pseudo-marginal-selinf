@@ -1,39 +1,5 @@
-#!/usr/bin/env Rscript
-
-script_file <- if (sys.nframe() > 0L) {
-  files <- vapply(sys.frames(), function(frame) {
-    if (is.null(frame$ofile)) "" else as.character(frame$ofile)
-  }, character(1L))
-  tail(files[nzchar(files)], 1L)
-} else {
-  sub("^--file=", "", grep("^--file=", commandArgs(FALSE), value = TRUE)[1L])
-}
-# Windows can leave UTF-8 command-line paths unmarked under the C locale.
-if (.Platform$OS.type == "windows" &&
-    isTRUE(l10n_info()[["system.codepage"]] == 65001L)) {
-  Encoding(script_file) <- "UTF-8"
-}
-script_directory <- dirname(script_file)
-
-main <- function(args = commandArgs(trailingOnly = TRUE)) {
-  # R file connections need a UTF-8 locale for non-ASCII Windows paths.
-  if (.Platform$OS.type == "windows" && Sys.getlocale("LC_CTYPE") == "C" &&
-      isTRUE(l10n_info()[["system.codepage"]] == 65001L)) {
-    previous_locale <- Sys.getlocale("LC_CTYPE")
-    Sys.setlocale("LC_CTYPE", ".UTF-8")
-    on.exit(Sys.setlocale("LC_CTYPE", previous_locale), add = TRUE)
-  }
-
-  source(file.path(script_directory, "samplers_fd.R"), local = TRUE)
-  source(file.path(script_directory, "analysis_fd.R"), local = TRUE)
-
-  output_path <- if (length(args)) args[[1L]] else "rerun_fd.rds"
-  if (length(args) > 1L) stop("Usage: Rscript run_fd.R [output.rds]")
-  if (file.exists(output_path) || dir.exists(output_path)) {
-    stop("Output already exists: ", output_path)
-  }
-
-  # Experiment settings: only the methods displayed in the paper.
+# Compute the formal configurations and return estimates and checkpoint histories in memory.
+run_experiment_fd <- function() {
   b_values <- 2:8
   fixed_cpm_caps <- c(
     `2` = 3000L,
@@ -78,30 +44,22 @@ main <- function(args = commandArgs(trailingOnly = TRUE)) {
         rep(0L, 7L),
         rep(8L, 7L),
         rep(8L, 7L)
-      ),
-      stringsAsFactors = FALSE
+      )
     )
   )
 
-  # Simulate each configuration, retaining checkpoint summaries but not chains.
   RNGkind("L'Ecuyer-CMRG")
   simulation_rows <- vector("list", nrow(config$simulation_plan))
   checkpoint_rows <- vector("list", nrow(config$simulation_plan))
 
+  # Configuration order fixes the seed assigned to each simulated run.
   for (configuration_id in seq_len(nrow(config$simulation_plan))) {
     plan <- config$simulation_plan[configuration_id, ]
     a <- if (plan$regime == "fixed_a") config$fixed_a else 1 - plan$b^-2
     rho <- if (plan$method == "CPM") 1 - plan$b^-2 else 0
     proposal_scale <- config$lambda / (plan$b * sqrt(a))
 
-    message(
-      sprintf(
-        "Running %s, %s, b=%d",
-        plan$regime,
-        plan$method,
-        plan$b
-      )
-    )
+    message(sprintf("Running %s, %s, b=%d", plan$regime, plan$method, plan$b))
     fit <- estimate_fixed_accuracy(
       method = plan$method,
       a = a,
@@ -122,14 +80,13 @@ main <- function(args = commandArgs(trailingOnly = TRUE)) {
       regime = plan$regime,
       b = plan$b,
       method = plan$method,
-      fit$checkpoints,
-      stringsAsFactors = FALSE
+      fit$checkpoints
     )
   }
 
   simulation_estimates <- do.call(rbind, simulation_rows)
   checkpoint_summary <- do.call(rbind, checkpoint_rows)
-  # Compute the rejection reference analytically, without sampling.
+  # Rejection complexity is computed analytically, without sampling.
   rejection_time <- vapply(
     b_values,
     rejection_fixed_accuracy_time,
@@ -150,8 +107,7 @@ main <- function(args = commandArgs(trailingOnly = TRUE)) {
       resolved = TRUE,
       estimate_type = "analytic formula crossing",
       result_type = "analytic",
-      regime = regime,
-      stringsAsFactors = FALSE
+      regime = regime
     )
   }))
 
@@ -166,16 +122,41 @@ main <- function(args = commandArgs(trailingOnly = TRUE)) {
   ]
   row.names(estimates) <- NULL
 
-  # Save the estimates consumed by plot_fd.R and the crossing inputs.
   result <- list(
     config = config,
     estimates = estimates,
     checkpoint_summary = checkpoint_summary
   )
 
+  result
+}
+
+main <- function(args = commandArgs(trailingOnly = TRUE)) {
+  # R file connections need a UTF-8 locale for non-ASCII Windows paths.
+  if (.Platform$OS.type == "windows" && Sys.getlocale("LC_CTYPE") == "C" &&
+      isTRUE(l10n_info()[["system.codepage"]] == 65001L)) {
+    previous_locale <- Sys.getlocale("LC_CTYPE")
+    Sys.setlocale("LC_CTYPE", ".UTF-8")
+    on.exit(Sys.setlocale("LC_CTYPE", previous_locale), add = TRUE)
+  }
+
+  if (length(args) > 1L) stop("Usage: Rscript run_fd.R [output.pdf]")
+  output_path <- if (length(args)) args[[1L]] else "sampling_complexity_fd.pdf"
+  if (!requireNamespace("ggplot2", quietly = TRUE)) stop("Package 'ggplot2' is required.")
+  if (!capabilities("cairo")) stop("PDF plotting requires R with Cairo support.")
+
+  source("samplers_fd.R", local = environment(run_experiment_fd))
+  source("analysis_fd.R", local = environment(run_experiment_fd))
+  source("plot_fd.R", local = TRUE)
+  result <- run_experiment_fd()
+  figure <- make_figure(result)
   dir.create(dirname(output_path), recursive = TRUE, showWarnings = FALSE)
-  saveRDS(result, output_path, version = 3)
-  message("Saved results to ", normalizePath(output_path, winslash = "/"))
+  ggplot2::ggsave(
+    output_path, figure, width = 12, height = 5, units = "in",
+    device = grDevices::cairo_pdf
+  )
+  message("Saved figure to ", output_path)
+  invisible(result)
 }
 
 if (sys.nframe() == 0L) {

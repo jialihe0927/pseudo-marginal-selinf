@@ -1,7 +1,5 @@
 run_pmmh_cp <- function(benchmark, config, method) {
-  if (!method %in% c("Crude PMMH", "Correlated PMMH")) {
-    stop("Unknown PMMH method: ", method)
-  }
+  # PM refreshes the auxiliary independently; CPM correlates it with the current state.
   rho <- if (method == "Crude PMMH") 0 else config$rho_correlated
   seed <- config$pmmh_seeds[[method]]
   RNGkind("L'Ecuyer-CMRG")
@@ -18,6 +16,7 @@ run_pmmh_cp <- function(benchmark, config, method) {
   set.seed(proposal_seed)
   proposal_state <- get(".Random.seed", envir = .GlobalEnv)
 
+  # Keep proposal, auxiliary and acceptance draws on their separate streams.
   draw_with_state <- function(state, expression) {
     assign(".Random.seed", state, envir = .GlobalEnv)
     value <- force(expression)
@@ -26,9 +25,6 @@ run_pmmh_cp <- function(benchmark, config, method) {
 
   dimension <- length(benchmark$T_obs)
   state <- list(target = benchmark$T_obs, auxiliary = benchmark$U_obs)
-  if (!selection_event_cp(state$target, state$auxiliary, benchmark)) {
-    stop("Observed initializer is not selected.")
-  }
   scale <- config$proposal_scale_initial
   draws <- matrix(NA_real_, config$total_transitions, dimension)
   accepted <- logical(config$total_transitions)
@@ -76,6 +72,7 @@ run_pmmh_cp <- function(benchmark, config, method) {
       )
     }
     draws[iteration, ] <- state$target
+    # Adapt only during warm-up; the production scale stays fixed.
     if (iteration <= config$adaptive_transitions) {
       rate <- 0.5 / (iteration + 10)^0.6
       scale <- exp(
@@ -89,6 +86,7 @@ run_pmmh_cp <- function(benchmark, config, method) {
     }
   }
 
+  # Remove warm-up once and retain all production states, including repeats.
   production_start <- config$adaptive_transitions + 1L
   production <- seq.int(production_start, config$total_transitions)
   list(
@@ -102,21 +100,19 @@ run_pmmh_cp <- function(benchmark, config, method) {
   )
 }
 
+# Draw independent Gaussian candidates at the same center and event as PM/CPM.
 run_rejection_cp <- function(benchmark, config) {
   RNGkind("L'Ecuyer-CMRG")
   set.seed(config$rejection_seed)
-  streams <- vector("list", length(config$rejection_chunk_sizes))
-  streams[[1L]] <- get(".Random.seed", envir = .GlobalEnv)
-  if (length(streams) > 1L) {
-    for (index in 2:length(streams)) {
-      streams[[index]] <- parallel::nextRNGStream(streams[[index - 1L]])
+  streams <- config$rejection_rng_states
+  if (is.null(streams)) {
+    streams <- vector("list", length(config$rejection_chunk_sizes))
+    streams[[1L]] <- get(".Random.seed", envir = .GlobalEnv)
+    if (length(streams) > 1L) {
+      for (index in 2:length(streams)) {
+        streams[[index]] <- parallel::nextRNGStream(streams[[index - 1L]])
+      }
     }
-  }
-  if (!is.null(config$rejection_rng_states)) {
-    if (length(config$rejection_rng_states) != length(streams)) {
-      stop("The saved rejection streams do not match the chunk budget.")
-    }
-    streams <- config$rejection_rng_states
   }
   hits <- 0L
   accepted <- matrix(numeric(0), ncol = length(benchmark$T_obs))

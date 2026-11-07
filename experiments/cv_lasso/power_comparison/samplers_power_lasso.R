@@ -4,10 +4,10 @@ log_target_nonnull_lasso <- function(T, covariance) {
   -0.5 * (length(T) * log(2 * pi) + 2 * sum(log(diag(factor))) + sum(standardized^2))
 }
 
+# The DGP may have a positive signal; the selective test reference remains zero-mean Gaussian.
 run_pmmh_nonnull_lasso <- function(dataset, method_id, rng_state, config) {
-  validate_config_nonnull_lasso(config)
-  if (!method_id %in% config$sampled_methods) stop("Unknown Lasso PMMH method: ", method_id)
-  # Proposed at delta zero reuses the quadratic-null kernel and its RNG order.
+  # Rerun the calibration kernel with its assigned stream and a directional statistic;
+  # this branch does not read a saved trajectory.
   if (dataset$delta == 0 && method_id == "model_only") {
     null <- list(
       dataset_id = dataset$dataset_id,
@@ -77,7 +77,7 @@ run_pmmh_nonnull_lasso <- function(dataset, method_id, rng_state, config) {
         production[iteration - pmmh$warmup, ] <- T
       }
     }
-    # Keep this matrix multiplication path for the inclusive-tail comparison.
+    # Count the inclusive upper tail over every production draw, without a +1 correction.
     scores <- statistic_nonnull_lasso(production, dataset$direction)
     observed <- statistic_nonnull_lasso(target$T_obs, dataset$direction)
     tail_count <- sum(scores >= observed)

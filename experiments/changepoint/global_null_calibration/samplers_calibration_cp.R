@@ -1,24 +1,12 @@
-log_gaussian_target_null_lasso <- function(target_value, covariance) {
-  factor <- chol(covariance)
-  standardized <- backsolve(factor, as.numeric(target_value), transpose = TRUE)
-  -0.5 * (
-    length(target_value) * log(2 * pi) +
-    2 * sum(log(diag(factor))) +
-    sum(standardized^2)
-  )
+adaptation_rate_null_cp <- function(iteration, config) {
+  config$pmmh$adaptation_rate /
+    (iteration + config$pmmh$adaptation_offset)^config$pmmh$adaptation_power
 }
 
-adaptation_rate_null_lasso <- function(iteration) {
-  0.5 / (as.numeric(iteration) + 10)^0.6
-}
-
-run_pmmh_null_lasso <- function(dataset, method_id, rng_state, config,
+# Sample the zero-mean selective Gaussian law, retaining every production statistic.
+# A supplied statistic function lets the directional delta-zero test use this same kernel.
+run_pmmh_null_cp <- function(dataset, method_id, rng_state, config,
                               statistic_function = NULL, statistic_observed = NULL) {
-  validate_config_null_lasso(config)
-  if (!method_id %in% c("model_only", "fixed_lambda")) {
-    stop("Unknown CV-Lasso PMMH method: ", method_id)
-  }
-
   old_kind <- RNGkind()
   old_seed_exists <- exists(".Random.seed", envir = .GlobalEnv, inherits = FALSE)
   if (old_seed_exists) {
@@ -33,16 +21,16 @@ run_pmmh_null_lasso <- function(dataset, method_id, rng_state, config,
     }
   }, add = TRUE)
 
-  RNGkind("L'Ecuyer-CMRG", "Inversion", "Rejection")
+  RNGkind("L'Ecuyer-CMRG")
   assign(".Random.seed", as.integer(rng_state), envir = .GlobalEnv)
 
   pmmh <- config$pmmh
   target <- dataset$target
-  dimension <- dataset$target_dimension
+  dimension <- dataset$selected_k
   target_value <- as.numeric(target$T_obs)
-  auxiliary <- as.numeric(dataset$randomization / config$randomization_sd)
+  auxiliary <- as.numeric(target$U_obs)
 
-  if (!selection_event_null_lasso(
+  if (!selection_event_null_cp(
     target_value,
     auxiliary,
     dataset,
@@ -52,7 +40,9 @@ run_pmmh_null_lasso <- function(dataset, method_id, rng_state, config,
     stop("The observed augmented state does not satisfy the selection event.")
   }
 
-  proposal_factor <- t(chol(target$Sigma_M))
+  # chol returns an upper factor; its transpose L has L L^T = Sigma_T.
+  # With dimension K, the proposal covariance is (h^2/K) Sigma_T.
+  proposal_factor <- t(chol(target$Sigma_T))
   proposal_scale <- pmmh$proposal_scale_initial
   tail_count <- 0L
   production_statistics <- numeric(pmmh$production)
@@ -71,9 +61,8 @@ run_pmmh_null_lasso <- function(dataset, method_id, rng_state, config,
     proposed_auxiliary <-
       pmmh$rho * current_auxiliary +
       sqrt(1 - pmmh$rho^2) * rnorm(config$n)
-    log_uniform <- log(runif(1L))
 
-    selected <- selection_event_null_lasso(
+    selected <- selection_event_null_cp(
       proposed_target,
       proposed_auxiliary,
       dataset,
@@ -81,8 +70,8 @@ run_pmmh_null_lasso <- function(dataset, method_id, rng_state, config,
       config
     )
     log_ratio <- if (selected) {
-      log_gaussian_target_null_lasso(proposed_target, target$Sigma_M) -
-        log_gaussian_target_null_lasso(current_target, target$Sigma_M)
+      -0.5 * target_statistic_null_cp(proposed_target, target) +
+        0.5 * target_statistic_null_cp(current_target, target)
     } else {
       -Inf
     }
@@ -91,18 +80,21 @@ run_pmmh_null_lasso <- function(dataset, method_id, rng_state, config,
     } else {
       0
     }
-    accepted <- selected && log_uniform < min(0, log_ratio)
+    # This kernel consumes a uniform only when the acceptance probability is positive.
+    accepted <- acceptance_probability > 0 && runif(1L) < acceptance_probability
 
+    # A rejection keeps both the target and auxiliary state.
     if (accepted) {
       target_value <- proposed_target
       auxiliary <- proposed_auxiliary
     }
 
+    # Adapt in warm-up only; record every subsequent state at the fixed scale.
     if (iteration <= pmmh$warmup) {
       warmup_accepted <- warmup_accepted + as.integer(accepted)
       next_scale <- exp(
         log(proposal_scale) +
-        adaptation_rate_null_lasso(iteration) *
+        adaptation_rate_null_cp(iteration, config) *
           (acceptance_probability - pmmh$target_acceptance)
       )
       proposal_scale <- min(
@@ -112,18 +104,19 @@ run_pmmh_null_lasso <- function(dataset, method_id, rng_state, config,
     } else {
       production_accepted <- production_accepted + as.integer(accepted)
       statistic <- if (is.null(statistic_function)) {
-        target_statistic_null_lasso(target_value, target)
+        target_statistic_null_cp(target_value, target)
       } else statistic_function(target_value)
       production_statistics[iteration - pmmh$warmup] <- statistic
       tail_count <- tail_count + as.integer(statistic >= statistic_observed)
     }
   }
 
+  # Inclusive upper-tail count over the production length, without a +1 correction.
   p_value <- tail_count / pmmh$production
   row <- data.frame(
     dataset_id = dataset$dataset_id,
     raw_id = dataset$raw_id,
-    target_id = "selected_model",
+    target_id = "selected_changepoints",
     method_id = method_id,
     target_dimension = dimension,
     statistic_observed = statistic_observed,
@@ -136,6 +129,7 @@ run_pmmh_null_lasso <- function(dataset, method_id, rng_state, config,
     warmup_acceptance = warmup_accepted / pmmh$warmup,
     production_acceptance = production_accepted / pmmh$production,
     final_proposal_scale = proposal_scale,
+    # Include the observed-state check as well as each transition selector call.
     selector_evaluations = 1L + pmmh$total_transitions,
     stringsAsFactors = FALSE
   )

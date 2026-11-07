@@ -1,19 +1,7 @@
 suppressPackageStartupMessages(library(ggplot2))
-panel_file <- if (sys.nframe() > 0L) {
-  files <- vapply(sys.frames(), function(frame) {
-    if (is.null(frame$ofile)) "" else as.character(frame$ofile)
-  }, character(1L))
-  tail(files[nzchar(files)], 1L)
-} else {
-  sub("^--file=", "", grep("^--file=", commandArgs(FALSE), value = TRUE)[1L])
-}
-panel_directory <- dirname(panel_file)
-source(file.path(panel_directory, "functions_null_lasso.R"), local = TRUE)
-source(file.path(panel_directory, "../../../plot_style.R"), local = TRUE)
 
 step_ribbon_data <- function(data) {
   data <- data[order(data$x), , drop = FALSE]
-  if (nrow(data) < 2L) return(data)
   index <- rep(seq_len(nrow(data)), each = 2L)[-c(1L, 2L * nrow(data))]
   output <- data[index, , drop = FALSE]
   output$x <- c(rbind(data$x[-nrow(data)], data$x[-1L]))
@@ -37,6 +25,7 @@ marker_data <- function(data, method_ids, marker_x) {
   do.call(rbind, rows)
 }
 
+# Pointwise across-dataset ECDF +/- one SE, clipped to [0, 1].
 make_ecdf_data <- function(p_values, method_id) {
   n <- length(p_values)
   x <- sort(unique(c(0, p_values, 0.05, 0.20, 0.40, 0.60, 0.80, 1)))
@@ -54,10 +43,6 @@ make_ecdf_data <- function(p_values, method_id) {
 }
 
 make_inference_figure <- function(result) {
-  required <- c("config", "dataset_results")
-  if (!all(required %in% names(result))) stop("The result object is incomplete.")
-
-  validate_result_null_lasso(result)
   data <- result$dataset_results
   method_ids <- as.character(result$config$methods$method_id)
 
@@ -85,7 +70,8 @@ make_inference_figure <- function(result) {
     naive_gaussian = "#9A86B2"
   )
   shapes <- c(model_only = 16, fixed_lambda = 17, naive_gaussian = 4)
-  labels <- expression("Proposed", "Fixed-" * lambda, "Naive")
+  labels <- unname(expression(model_only = "Proposed", fixed_lambda = "Fixed-" * lambda,
+                              naive_gaussian = "Naive")[method_ids])
 
   ggplot(plot_data, aes(x = x, y = ecdf, group = method_id)) +
     geom_ribbon(
@@ -151,17 +137,13 @@ make_inference_figure <- function(result) {
 }
 
 main <- function(args = commandArgs(trailingOnly = TRUE)) {
+  source("../../../plot_style.R", local = environment(make_inference_figure))
   if (length(args) > 1L) {
-    stop("Usage: Rscript plot_inference_null_lasso.R [results.rds]")
+    stop("Usage: Rscript plot_calibration_lasso.R [results.rds]")
   }
-  input_path <- if (length(args)) args[[1L]] else file.path(panel_directory, "inference_null_lasso.rds")
-  if (!file.exists(input_path)) stop("Results file not found: ", input_path)
+  input_path <- if (length(args)) args[[1L]] else "calibration_lasso.rds"
 
-  output_path <- if (identical(input_path, "inference_null_lasso.rds")) {
-    "inference_null_lasso.pdf"
-  } else {
-    paste0(tools::file_path_sans_ext(input_path), ".pdf")
-  }
+  output_path <- paste0(tools::file_path_sans_ext(input_path), ".pdf")
 
   figure <- make_inference_figure(readRDS(input_path))
   ggsave(
